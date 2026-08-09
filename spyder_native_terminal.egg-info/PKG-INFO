@@ -1,7 +1,0 @@
-Metadata-Version: 2.4
-Name: spyder-native-terminal
-Version: 0.1.0
-Summary: Terminal integre a Spyder : le moteur de Konsole (QTermWidget) dans un dock, sans navigateur embarque ni serveur local
-Requires-Python: >=3.9
-Requires-Dist: qtpy
-Requires-Dist: qtawesome

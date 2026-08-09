@@ -19,7 +19,7 @@ PLUGIN_DIR="$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/.." && pwd)"
 # =============================================================================
 # Plugin Spyder "Terminal natif" — le moteur de Konsole dans un dock
 # =============================================================================
-# Installe le greffon versionne dans ce depot (spyder_native_terminal/,
+# Installe le greffon versionne dans ce depot (spyder_konsole/,
 # qui REMPLACE le greffon amont spyder-terminal (desinstalle le 26/07/2026).
 #
 # POURQUOI CE REMPLACEMENT. spyder-terminal affichait xterm.js dans un QWebEngineView
@@ -39,7 +39,7 @@ PLUGIN_DIR="$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/.." && pwd)"
 # faut faire pour l'obtenir. C'est volontaire : un greffon qui refuse de s'installer
 # disparait de la liste des greffons, et personne ne sait pourquoi.
 #
-# Invocation : installation_SmartPythonEditor.sh --greffon terminal
+# Invocation : installation_SmartPythonEditor.sh --greffon konsole
 # =============================================================================
 
 # PAS de "set -e" : error_handler.sh installe un trap ERR interactif, incompatible
@@ -57,68 +57,72 @@ if [ ! -x "$SPYDER_PYTHON" ]; then
 fi
 echo "Environnement Spyder cible : $SPYDER_PYTHON"
 
-# --- Le moteur de Konsole : prerequis puis binding ---------------------------
-# Trois prerequis, tous verifiables :
-#   qtermwidget       : la bibliotheque C++ (le moteur de Konsole en widget Qt).
-#   libxml2-legacy    : le generateur shiboken6 est lie a libxml2 en 2.x (soname .so.2),
-#                       alors qu'Arch est passe a .so.16. Sans ce paquet de
-#                       compatibilite, le binaire ne DEMARRE pas, et son message
-#                       ("libxml2.so.2: cannot open shared object file") ne dit pas quel
-#                       paquet installer (diagnostic du 26/07/2026).
-#   shiboken6_generator : le generateur lui-meme, a la version EXACTE de PySide6.
-echo
-echo "--- Moteur Konsole : prerequis ---"
-sudo pacman -S --needed --noconfirm qtermwidget libxml2-legacy || {
-  echo "ATTENTION : installation de qtermwidget/libxml2-legacy impossible." >&2
-  echo "            Le greffon s'installera, mais son panneau dira que le moteur manque." >&2
-}
-
-# La version du generateur doit coller a celle de PySide6 : un generateur d'une autre
-# version produit des sources qui ne compilent pas contre le shiboken installe.
-VERSION_PYSIDE=$("$SPYDER_PYTHON" -c "import PySide6; print(PySide6.__version__)" 2>/dev/null)
-if [ -n "$VERSION_PYSIDE" ]; then
-  echo "PySide6 detecte : $VERSION_PYSIDE"
-  # On appelle le pip DU VENV directement, et non `pip` sous PYENV_VERSION : ce script
-  # doit rester lancable seul, sans les variables que installation_SmartPythonEditor.sh definit
-  # pour lui-meme (SPYDER_VERSION, PIP_CACHE_ARGS) — avec `set -u`, s'y fier le ferait
-  # mourir sur une variable non definie.
-  "$SPYDER_PYTHON" -m pip install ${PIP_CACHE_ARGS:-} \
-      "shiboken6_generator==$VERSION_PYSIDE" || {
-    echo "ATTENTION : shiboken6_generator==$VERSION_PYSIDE non installe." >&2
-    echo "            Sans lui, pas de binding : le panneau le dira." >&2
-  }
-  echo
-  echo "--- Construction du binding QTermWidget ---"
-  # build.sh refuse de compiler si le Qt des en-tetes (systeme) et le Qt du runtime
-  # (celui de la roue PySide6) different de version mineure : il produirait un module
-  # qui charge deux Qt dans le meme processus. Cet echec-la est NORMAL et non fatal.
-  bash "/DATA/Python/FORKS/SmartPythonEditorPlugins/smartos_konsole/qtermwidget_binding/build.sh" "$SPYDER_PYTHON" || {
-    echo "Binding non construit : le panneau du greffon dira quoi faire pour l'obtenir." >&2
-  }
-else
-  echo "PySide6 absent de ce venv (PyQt6 ?) : pas de binding shiboken possible."
-  echo "Le greffon s'installera, mais son panneau dira que le moteur manque."
+# --- Binding qtermwidget -----------------------------------------------------
+# Le moteur (konsole_view.py) vit DANS ce greffon depuis le 09/08/2026 (il etait dans un
+# paquet smartos_konsole a part du 31/07 au 08/08 - fusion sur decision utilisateur, le
+# greffon Claude le tire desormais en dependance) ; le binding natif, lui, se compile
+# CONTRE le Qt du SYSTEME (QTermWidget est lie a qt6-base) : la roue PySide6 du venv doit
+# etre de la MEME serie mineure que lui, sans quoi build.sh refuse (deux Qt dans un meme
+# processus). Sur les machines SmartOS on ALIGNE donc la roue sur le Qt systeme puis on
+# construit. C'est la moitie qui PRODUIT ce que spyder_qt_env.sh suppose present (il leve
+# la borne haute de check_qt() quand la roue depasse la plage de Spyder) : faite a la main
+# le 26/07/2026, jamais scriptee, elle a ete perdue a la recreation du venv le 08/08/2026
+# - panneaux Terminal et Claude ouverts sur « moteur non construit ». Retour arriere :
+# pip install PySide6==<plage du fork>, et spyder_qt_env.sh redevient inerte de lui-meme.
+if ! QT_QPA_PLATFORM=offscreen "$SPYDER_PYTHON" -c "import qtermwidget" 2>/dev/null; then
+  # Prerequis systeme (Arch) : la bibliotheque C++ QTermWidget, et libxml2 en 2.x - le
+  # generateur shiboken6 est lie a libxml2.so.2, disparu d'Arch (diagnostic du 26/07/2026 :
+  # son message d'erreur ne dit pas quel paquet installer). Echec non fatal : hors Arch ou
+  # sans sudo, le controle des en-tetes ci-dessous dira quoi installer.
+  if command -v pacman >/dev/null 2>&1; then
+    sudo pacman -S --needed --noconfirm qtermwidget libxml2-legacy || {
+      echo "ATTENTION : installation de qtermwidget/libxml2-legacy impossible." >&2
+    }
+  fi
+  QT_SYSTEME="$(pkg-config --modversion Qt6Core 2>/dev/null || true)"
+  if [ -z "$QT_SYSTEME" ] || { ! pkg-config --exists qtermwidget6 2>/dev/null \
+       && [ ! -f /usr/include/qtermwidget6/qtermwidget.h ]; }; then
+    echo
+    echo "ATTENTION : binding qtermwidget non construit, et en-tetes Qt6/QTermWidget absents" >&2
+    echo "            (paquets qt6-base + qtermwidget). Les installer puis relancer" >&2
+    echo "            $PLUGIN_DIR/qtermwidget_binding/build.sh," >&2
+    echo "            sinon les panneaux Terminal et Claude s'ouvriront sur un message" >&2
+    echo "            d'attente au lieu d'un shell." >&2
+  else
+    PYSIDE_VENV="$("$SPYDER_PYTHON" -c 'from PySide6 import __version__; print(__version__)')"
+    if [ "${PYSIDE_VENV%.*}" != "${QT_SYSTEME%.*}" ]; then
+      echo
+      echo "--- Alignement de PySide6 ($PYSIDE_VENV) sur le Qt systeme ($QT_SYSTEME) ---"
+      # ==<majeur.mineur>.* et pas ==$QT_SYSTEME : les correctifs (troisieme chiffre) de la
+      # roue et du paquet systeme divergent couramment, seule la serie mineure compte.
+      "$SPYDER_PYTHON" -m pip install ${PIP_CACHE_ARGS:-} \
+          "PySide6==${QT_SYSTEME%.*}.*" "PySide6_Essentials==${QT_SYSTEME%.*}.*" \
+          "PySide6_Addons==${QT_SYSTEME%.*}.*" "shiboken6==${QT_SYSTEME%.*}.*" \
+          "shiboken6_generator==${QT_SYSTEME%.*}.*" || {
+        echo "ERREUR : alignement de PySide6 sur Qt $QT_SYSTEME impossible." >&2; exit 1; }
+    else
+      # Meme serie : seul le generateur (absent des requirements) peut manquer pour compiler.
+      "$SPYDER_PYTHON" -m pip install ${PIP_CACHE_ARGS:-} \
+          "shiboken6_generator==${PYSIDE_VENV%.*}.*" || {
+        echo "ERREUR : installation de shiboken6_generator impossible." >&2; exit 1; }
+    fi
+    bash "$PLUGIN_DIR/qtermwidget_binding/build.sh" "$SPYDER_PYTHON" || {
+      echo "ERREUR : construction du binding qtermwidget echouee (voir ci-dessus)." >&2
+      exit 1; }
+    QT_QPA_PLATFORM=offscreen "$SPYDER_PYTHON" -c "import qtermwidget" || {
+      echo "ERREUR : binding construit mais toujours pas importable." >&2; exit 1; }
+    echo "Binding qtermwidget construit et verifie."
+  fi
 fi
-
-# --- Prerequis : le moteur de terminal partage -------------------------------
-# smartos_konsole n'est pas un greffon mais une BIBLIOTHEQUE, importee par les deux
-# panneaux a terminaux. Le prerequis est donc SYMETRIQUE — aucun greffon ne depend de
-# l'autre — la ou le greffon Claude dependait autrefois du greffon Terminal.
-echo
-echo "--- Prerequis : moteur de terminal Konsole ---"
-if ! "$SPYDER_PYTHON" -c "import smartos_konsole" 2>/dev/null; then
-  echo "Moteur Konsole absent : installation prealable." >&2
-  bash "$(dirname "$PLUGIN_DIR")/smartos_konsole/outils_smartos/installer_dans_venv.sh" "$SPYDER_PYTHON" "$SANS_TESTS" "$OUTIL_INSTALL" "$OUTIL_CONFIG" "$SPYDER_INI" || {
-    echo "ERREUR : le moteur Konsole n'a pas pu etre installe." >&2
-    echo "         Le panneau n'a alors ni terminal ni shell." >&2
-    exit 1; }
-fi
-echo "Moteur Konsole present."
 
 # --- Verification de chargement ----------------------------------------------
 if [ "$SANS_TESTS" = false ]; then
   echo
   echo "--- Tests du greffon ---"
+  # Le moteur : de vrais shells et de vraies frappes (QTest), cas sautes si le binding
+  # n'est pas construit. Vivait dans le paquet smartos_konsole jusqu'au 09/08/2026.
+  QT_QPA_PLATFORM=offscreen "$SPYDER_PYTHON" "$PLUGIN_DIR/tests/test_konsole_view.py" \
+    || { echo "ERREUR : les tests du moteur Konsole echouent." >&2; exit 1; }
   # La mosaique : offscreen, sans Spyder ni moteur de terminal.
   QT_QPA_PLATFORM=offscreen "$SPYDER_PYTHON" "$PLUGIN_DIR/tests/test_mosaique.py" \
     || { echo "ERREUR : les tests de la mosaique echouent." >&2; exit 1; }
@@ -135,7 +139,7 @@ QT_QPA_PLATFORM=offscreen PYTHONPATH="$PLUGIN_DIR" "$SPYDER_PYTHON" -c "
 from qtpy.QtWidgets import QApplication
 app = QApplication.instance() or QApplication([])
 
-from spyder_native_terminal.spyder.plugin import TerminalNatif
+from spyder_konsole.spyder.plugin import TerminalNatif
 assert TerminalNatif.NAME == 'native_terminal'
 
 # L'INDEPENDANCE SE VERIFIE ICI, et c'est le seul endroit ou elle se verrait rompre : un
@@ -153,7 +157,7 @@ import qtawesome as qta
 assert not qta.icon('mdi.console').isNull()
 assert not qta.icon('mdi.console-line').isNull()
 
-from smartos_konsole.konsole_view import DISPONIBLE
+from spyder_konsole.konsole_view import DISPONIBLE
 print('OK  greffon Terminal natif chargeable ; moteur Konsole :',
       'present' if DISPONIBLE else 'ABSENT (binding a construire)')
 " || { echo "ERREUR : le greffon ne se charge pas - installation annulee." >&2; exit 1; }

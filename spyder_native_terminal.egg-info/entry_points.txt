@@ -1,2 +1,0 @@
-[spyder.plugins]
-native_terminal = spyder_native_terminal.spyder.plugin:TerminalNatif

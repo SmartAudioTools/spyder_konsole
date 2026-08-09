@@ -44,7 +44,7 @@ from qtpy.QtWidgets import QApplication, QWidget  # noqa: E402
 
 APP = QApplication.instance() or QApplication([])
 
-from spyder_native_terminal.spyder.main_widget import PanneauTerminal  # noqa: E402
+from spyder_konsole.spyder.main_widget import PanneauTerminal  # noqa: E402
 
 # Monter plusieurs panneaux dans le meme processus fait rouspeter le registre de Spyder :
 # chaque instance reenregistre ses boutons sous les memes identifiants. C'est attendu ici —
@@ -109,7 +109,7 @@ class TestMontage(unittest.TestCase):
         self.assertTrue(
             any("ACTION_AGRANDIR" in c.__dict__
                 for c in type(self.p).__mro__
-                if c.__module__.startswith("spyder_native_terminal")),
+                if c.__module__.startswith("spyder_konsole")),
             "ACTION_AGRANDIR doit etre definie par le greffon lui-meme")
         self.assertIsInstance(self.p.ACTION_AGRANDIR, str)
 

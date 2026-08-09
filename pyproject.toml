@@ -3,26 +3,25 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "spyder-native-terminal"
+name = "spyder-konsole"
 version = "0.1.0"
 description = "Terminal integre a Spyder : le moteur de Konsole (QTermWidget) dans un dock, sans navigateur embarque ni serveur local"
 requires-python = ">=3.9"
 # Aucune dependance PyPI en dehors de ce que Spyder apporte deja : le moteur est la
 # bibliotheque systeme libqtermwidget6, atteinte par le binding shiboken construit par
-# Commun/qtermwidget_binding/build.sh — rien a resoudre par pip.
+# qtermwidget_binding/build.sh (racine de ce depot) — rien a resoudre par pip.
 #
-# smartos-konsole (l'enveloppe autour de ce binding) n'est pas non plus une dependance
-# pip : les paquets sont installes cote a cote par install_spyder_plugin.py, sans
-# resolveur, et l'installateur du greffon pose le moteur en prerequis s'il manque. Il
-# vivait DANS ce greffon jusqu'au 31/07/2026 ; il en est sorti le jour ou le greffon Claude
-# a cesse d'heriter de celui-ci, pour que le lien entre les deux soit symetrique.
+# Le moteur (konsole_view.py, l'enveloppe autour de ce binding) vit DANS ce paquet depuis
+# le 09/08/2026 : sorti vers un paquet smartos-konsole a part le 31/07 (independance des
+# greffons Terminal et Claude), rapatrie quand spyder-claude a pu le declarer en dependance
+# pip — le nom smartos-konsole etait mal choisi, le moteur tient a KDE, pas a SmartOS.
 dependencies = ["qtpy", "qtawesome"]
 
 # Spyder decouvre les greffons tiers par ce groupe de points d'entree. Le nom du point
 # d'entree DOIT etre identique a l'attribut NAME de la classe, sinon Spyder leve une
 # SpyderAPIError et ignore le greffon (spyder/app/find_plugins.py, find_external_plugins).
 [project.entry-points."spyder.plugins"]
-native_terminal = "spyder_native_terminal.spyder.plugin:TerminalNatif"
+native_terminal = "spyder_konsole.spyder.plugin:TerminalNatif"
 
 [tool.setuptools.packages.find]
-include = ["spyder_native_terminal*"]
+include = ["spyder_konsole*"]

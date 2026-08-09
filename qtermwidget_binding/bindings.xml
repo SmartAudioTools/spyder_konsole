@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Typesystem shiboken pour QTermWidget.
+
+  C'est ici que se joue l'ecart entre shiboken et SIP, et pourquoi cette voie a ete
+  retenue : shiboken lit les EN-TETES C++ avec libclang et genere l'essentiel tout seul.
+  Ce fichier ne decrit donc pas l'API — il ne fait que declarer ce qu'on veut exporter et
+  corriger les quelques cas que l'analyse automatique ne peut pas trancher. Avec SIP il
+  aurait fallu retranscrire a la main chaque classe, methode et signal.
+
+  Les <load-typesystem> tirent les types Qt deja bindes par PySide6 (QWidget, QString,
+  QFont, QKeyEvent...) : generate="no" veut dire « ces types existent deja, reutilise-les
+  au lieu d'en creer une seconde copie ». Sans cela on obtiendrait un module dont les
+  QWidget ne seraient pas ceux de PySide6 — deux hierarchies etrangeres dans le meme
+  processus, exactement le defaut qu'on cherche a eviter.
+-->
+<typesystem package="qtermwidget">
+
+  <load-typesystem name="typesystem_core.xml" generate="no"/>
+  <load-typesystem name="typesystem_gui.xml" generate="no"/>
+  <load-typesystem name="typesystem_widgets.xml" generate="no"/>
+
+  <!--
+    QTermWidgetInterface est l'interface pure (Q_DECLARE_INTERFACE) dont QTermWidget
+    herite en second. On la declare — plutot que de la rejeter — pour UNE raison
+    concrete : l'enumeration ScrollBarPosition y est definie, et c'est elle qui commande
+    l'affichage de la barre de defilement (sans elle, pas d'historique consultable a la
+    souris). La declarer ici la rend disponible cote Python.
+    Si la generation se plaint d'une hierarchie multiple qu'elle ne sait pas produire, le
+    repli est de remplacer ce bloc par <rejection class="QTermWidgetInterface"/> et de
+    retirer setScrollBarPosition ci-dessous.
+  -->
+  <object-type name="QTermWidgetInterface">
+    <enum-type name="ScrollBarPosition"/>
+  </object-type>
+  <rejection class="TermWidgetImpl"/>
+  <rejection class="SearchBar"/>
+
+  <object-type name="QTermWidget">
+
+    <!--
+      setKeyboardCursorShape prend une enumeration declaree par un `using` vers
+      Konsole::Emulation, dans un en-tete interne. La forme du curseur ne vaut pas de
+      tirer toute la classe Emulation dans le binding : la fonction est retiree, le
+      curseur garde sa forme par defaut (bloc), celle de Konsole.
+    -->
+    <modify-function signature="setKeyboardCursorShape(QTermWidget::KeyboardCursorShape)"
+                     remove="all"/>
+
+    <!--
+      sendData(const char *, int) : un pointeur brut et sa longueur, que shiboken ne peut
+      pas convertir sans savoir qui possede la memoire. Ce signal sert a rediriger la
+      sortie vers un terminal distant — cas d'usage etranger a Spyder. On le retire
+      plutot que d'ecrire une conversion sur mesure qui ne servirait jamais.
+    -->
+    <modify-function signature="sendData(const char*,int)" remove="all"/>
+
+    <!--
+      sendKeyEvent(QKeyEvent*) : PySide6 possede deja QKeyEvent ; on precise seulement
+      que l'appelant garde la propriete de l'evenement, sinon shiboken pourrait le
+      detruire cote C++ alors que Qt le reutilise.
+    -->
+    <modify-function signature="sendKeyEvent(QKeyEvent*)">
+      <modify-argument index="1">
+        <parent index="this" action="add"/>
+      </modify-argument>
+    </modify-function>
+
+    <!--
+      getSelectionStart/End(int&, int&) : deux entiers passes par reference, c'est-a-dire
+      des valeurs de RETOUR en Python. Sans cette declaration, shiboken generait une
+      signature inutilisable depuis Python.
+    -->
+    <modify-function signature="getSelectionStart(int&amp;,int&amp;)">
+      <modify-argument index="1"><remove-argument/></modify-argument>
+      <modify-argument index="2"><remove-argument/></modify-argument>
+    </modify-function>
+    <modify-function signature="getSelectionEnd(int&amp;,int&amp;)">
+      <modify-argument index="1"><remove-argument/></modify-argument>
+      <modify-argument index="2"><remove-argument/></modify-argument>
+    </modify-function>
+
+  </object-type>
+
+  <suppress-warning text="*QTermWidgetInterface*"/>
+  <suppress-warning text="*Konsole::*"/>
+  <suppress-warning text="*skipping function 'operator*"/>
+
+</typesystem>

@@ -24,7 +24,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from qtpy.QtCore import QEvent  # noqa: E402
 from qtpy.QtWidgets import (QApplication, QVBoxLayout, QWidget)  # noqa: E402
 
-from spyder_native_terminal.mosaique import Cellule, Mosaique, disposition  # noqa: E402
+from spyder_konsole.mosaique import Cellule, Mosaique, disposition  # noqa: E402
 
 
 APPLICATION = QApplication.instance() or QApplication(sys.argv)

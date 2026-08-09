@@ -20,10 +20,10 @@ from spyder.widgets.tabs import Tabs
 from spyder.api.widgets.main_widget import PluginMainWidget
 from spyder.utils.icon_manager import ima
 
-from spyder_native_terminal.spyder.translations import _
-from smartos_konsole import konsole_view
-from smartos_konsole.konsole_view import VueKonsole
-from spyder_native_terminal.mosaique import Mosaique
+from spyder_konsole.spyder.translations import _
+from spyder_konsole import konsole_view
+from spyder_konsole.konsole_view import VueKonsole
+from spyder_konsole.mosaique import Mosaique
 
 
 class PanneauTerminal(PluginMainWidget):
@@ -395,9 +395,10 @@ class PanneauTerminal(PluginMainWidget):
     # ⚠ CE QUE CELA COUTE, ET QU'IL FAUT SAVOIR AVANT DE CORRIGER UN DEFAUT ICI : le meme
     # defaut est probablement dans spyder_claude/spyder/main_widget.py. Tant que les deux
     # n'ont pas diverge, un correctif se porte des deux cotes — c'est le prix assume de
-    # l'independance, pas un oubli. Le MOTEUR, lui, echappe a cette regle : il vit dans
-    # `smartos_konsole` depuis le 31/07/2026, en un seul exemplaire. Ce qui est jumele est
-    # l'AFFICHAGE, et lui seul.
+    # l'independance, pas un oubli. Le MOTEUR, lui, echappe a cette regle : sorti des deux
+    # greffons le 31/07/2026 puis rapatrie ICI (konsole_view.py, decision utilisateur du
+    # 09/08/2026 - spyder_claude le tire en dependance pip), il n'existe qu'en un seul
+    # exemplaire. Ce qui est jumele est l'AFFICHAGE, et lui seul.
 
     def _rafraichir_letat_affiche(self):
         """Repose sur l'affichage courant ce qui depend du mode.
@@ -867,9 +868,8 @@ class PanneauTerminal(PluginMainWidget):
             return
         self._etat_vide(
             _("Le moteur de Konsole n'est pas construit sur cette machine.\n\n"
-              "Lancer le script qtermwidget_binding/build.sh du paquet smartos_konsole "
-              "(Commun/qtermwidget_binding/ dans le dépôt SmartOS), puis rouvrir "
-              "Spyder."),
+              "Lancer le script qtermwidget_binding/build.sh du dépôt "
+              "spyder_konsole, puis rouvrir Spyder."),
             titre=_("Terminal indisponible"))
 
     def nombre_de_sessions(self):

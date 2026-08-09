@@ -17,8 +17,8 @@ import qtawesome as qta
 from spyder.api.plugins import Plugins, SpyderDockablePlugin
 from spyder.utils.icon_manager import ima
 
-from spyder_native_terminal.spyder.main_widget import PanneauTerminal
-from spyder_native_terminal.spyder.translations import _
+from spyder_konsole.spyder.main_widget import PanneauTerminal
+from spyder_konsole.spyder.translations import _
 
 
 class TerminalNatif(SpyderDockablePlugin):
