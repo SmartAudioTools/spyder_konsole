@@ -8,8 +8,9 @@ version = "0.1.0"
 description = "Terminal integre a Spyder : le moteur de Konsole (QTermWidget) dans un dock, sans navigateur embarque ni serveur local"
 requires-python = ">=3.9"
 # Aucune dependance PyPI en dehors de ce que Spyder apporte deja : le moteur est la
-# bibliotheque systeme libqtermwidget6, atteinte par le binding shiboken construit par
-# qtermwidget_binding/build.sh (racine de ce depot) — rien a resoudre par pip.
+# bibliotheque systeme libqtermwidget6, atteinte par le binding shiboken de
+# qtermwidget_binding/build.sh — rien a resoudre par pip, mais quelque chose a CONSTRUIRE,
+# ce que setup.py (a cote de ce fichier) branche sur « pip install [-e] ».
 #
 # Le moteur (konsole_view.py, l'enveloppe autour de ce binding) vit DANS ce paquet depuis
 # le 09/08/2026 : sorti vers un paquet smartos-konsole a part le 31/07 (independance des

@@ -40,6 +40,13 @@ PLUGIN_DIR="$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/.." && pwd)"
 # disparait de la liste des greffons, et personne ne sait pourquoi.
 #
 # Invocation : installation_SmartPythonEditor.sh --greffon konsole
+#
+# ⚠ CE SCRIPT N'EST PLUS LE SEUL CHEMIN (10/08/2026) : « pip install -e <ce depot>
+# --no-build-isolation » installe le greffon ET construit le moteur, ce qui permet de le
+# citer en une ligne dans le requirements du venv Spyder. Le comment et ses deux conditions
+# sont dans setup.py, a la racine de ce depot. Ce script-ci garde ce que pip ne peut pas
+# faire : poser les paquets systeme, aligner la roue PySide6 sur le Qt du systeme, et
+# rejouer les bancs.
 # =============================================================================
 
 # PAS de "set -e" : error_handler.sh installe un trap ERR interactif, incompatible
