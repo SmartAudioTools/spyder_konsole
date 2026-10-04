@@ -108,6 +108,25 @@ class TestVueKonsole(BaseTerminal):
         self.assertTrue(attendre(lambda: "MARQUEUR_SMARTOS" in self.contenu()),
                         "la sortie du shell n'est jamais arrivee a l'ecran")
 
+    def test_les_accesseurs_de_pid_disent_qui_est_au_premier_plan(self):
+        """`pid_shell`/`pid_premier_plan` : l'etat reel qu'attendent les panneaux.
+
+        Egaux quand le shell attend une commande, differents pendant qu'une commande
+        tourne — c'est ce contrat que le bouton « Nouvelle session » du greffon Claude
+        utilise pour savoir quand le selecteur de sessions est referme.
+        """
+        self.vue.demarrer(commande=["/bin/sh"])
+        pid = self.attendre_le_shell()
+        self.assertEqual(self.vue.pid_shell(), pid)
+        self.assertTrue(attendre(
+            lambda: self.vue.pid_premier_plan() == self.vue.pid_shell()))
+        self.vue.envoyer("sleep 60\n")
+        self.assertTrue(attendre(
+            lambda: self.vue.pid_premier_plan() != self.vue.pid_shell()))
+        self.vue.envoyer(self.vue.INTERRUPTION)
+        self.assertTrue(attendre(
+            lambda: self.vue.pid_premier_plan() == self.vue.pid_shell()))
+
     def test_envoi_de_texte_execute_la_commande(self):
         """sendText simule la frappe : c'est ainsi qu'on pilote le terminal sans clic."""
         self.vue.demarrer(commande=["/bin/sh"])

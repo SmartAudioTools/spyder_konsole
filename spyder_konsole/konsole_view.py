@@ -445,13 +445,28 @@ class VueKonsole(QFrame):
         self._terminal.startShellProgram()
         self._terminal.setFocus()
 
+    def pid_shell(self):
+        """PID du shell de cette session, 0 si le shell est sorti ou pas encore parti."""
+        try:
+            return self._terminal.getShellPID()
+        except Exception:      # le shell peut deja etre sorti
+            return 0
+
+    def pid_premier_plan(self):
+        """PID du processus au premier plan du pty, 0 a defaut.
+
+        Egal a `pid_shell()` quand le shell attend une commande : c'est le temoin
+        « plus rien ne tourne » qu'attendent les panneaux — etat reel, jamais de
+        `sleep` fixe (cf. tests/test_konsole_view.py, qui s'en sert deja).
+        """
+        try:
+            return self._terminal.getForegroundProcessId()
+        except Exception:
+            return 0
+
     def arreter(self, force=False):
         """Termine le shell de CETTE session, par son pid — jamais par nom."""
-        pid = 0
-        try:
-            pid = self._terminal.getShellPID()
-        except Exception:      # le shell peut deja etre sorti
-            pid = 0
+        pid = self.pid_shell()
         if pid > 0:
             import signal
             try:
