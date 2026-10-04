@@ -274,6 +274,9 @@ class VueKonsole(QFrame):
 
     sig_titre = Signal(str)
     sig_termine = Signal(int)
+    #: Le terminal a recu de la sortie (le contenu n'est pas transmis) : c'est par lui
+    #: qu'un panneau attend que l'affichage se stabilise.
+    sig_sortie = Signal()
 
     #: Retrait du contenu par rapport au cadre, en pixels : un pour le trait, trois pour
     #: laisser voir l'arrondi des coins (SIZE_BORDER_RADIUS vaut 4 dans le theme).
@@ -313,6 +316,7 @@ class VueKonsole(QFrame):
 
         self._terminal.finished.connect(self._sur_fin)
         self._terminal.titleChanged.connect(self._sur_titre)
+        self._terminal.receivedData.connect(self.sig_sortie)
         self._poser_raccourcis()
 
     # ------------------------------------------------------------- apparence
