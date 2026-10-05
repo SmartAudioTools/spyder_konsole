@@ -63,7 +63,13 @@ class TerminalNatif(SpyderDockablePlugin):
         # Apres tout le montage de Spyder : c'est le seul moment ou masquer le burger
         # vide tient (cf. PanneauTerminal._masquer_burger_vide).
         widget._masquer_burger_vide()
-        if widget.nombre_de_sessions() == 0:
+        # Une fois l'editeur utilisable, pas avant : ouvrir la session coutait ~ 70 ms sur
+        # le fil principal avant que l'editeur ne reponde (mesure du 05/10/2026).
+        from qtpy.QtCore import QTimer
+        QTimer.singleShot(150, self._premiere_session)
+
+    def _premiere_session(self):
+        if self.get_widget().nombre_de_sessions() == 0:
             self.ouvrir_terminal()
 
     def on_close(self, cancelable=False):
