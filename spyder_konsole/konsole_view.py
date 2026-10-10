@@ -365,6 +365,10 @@ class VueKonsole(QFrame):
         self._terminal.setScrollBarPosition(
             _qtw.QTermWidgetInterface.ScrollBarRight)
         self._terminal.setFlowControlEnabled(False)
+        # Coller sans « Êtes-vous sûr de vouloir coller ce texte ? » : la confirmation
+        # du texte multiligne est ACTIVEE par defaut dans le source de qtermwidget
+        # (demande de l'utilisateur, 10/10/2026 : coller d'un simple Ctrl+V).
+        self._terminal.setConfirmMultilinePaste(False)
 
     def appliquer_schema(self, nom=None):
         """Change le jeu de couleurs de CETTE session, a chaud. Sans nom : celui d'origine.
