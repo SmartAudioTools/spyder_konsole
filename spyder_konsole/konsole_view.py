@@ -56,8 +56,8 @@ spyder/main_widget.py, _afficher_absence_du_binding.
 import configparser
 import os
 
-from qtpy.QtCore import Qt, Signal
-from qtpy.QtGui import QKeySequence, QShortcut
+from qtpy.QtCore import QRectF, Qt, Signal
+from qtpy.QtGui import QColor, QKeySequence, QPainter, QPen, QShortcut
 from qtpy.QtWidgets import QFrame, QVBoxLayout
 
 #: Le module natif est produit par qtermwidget_binding/build.sh (racine de ce depot). Son absence n'est
@@ -189,6 +189,18 @@ def _fichier_schema(nom):
     return None
 
 
+def fond_du_schema(nom):
+    """Couleur de fond (QColor) du jeu `nom`, lue dans son fichier. None si introuvable."""
+    chemin = _fichier_schema(nom) if nom else None
+    valeur = (_lire_ini(chemin).get("Background", {}).get("Color", "")
+              if chemin else "")
+    try:
+        rouge, vert, bleu = (int(v) for v in valeur.split(",")[:3])
+    except ValueError:
+        return None
+    return QColor(rouge, vert, bleu)
+
+
 def preparer_schema(profil, fond, texte, fond_intense=None, nom_derive="SpyderFond"):
     """Fabrique le jeu de couleurs de l'IDE et le rend visible. Retourne son nom.
 
@@ -277,6 +289,8 @@ class VueKonsole(QFrame):
     #: Le terminal a recu de la sortie (le contenu n'est pas transmis) : c'est par lui
     #: qu'un panneau attend que l'affichage se stabilise.
     sig_sortie = Signal()
+    #: Couleur de fond demandee par le programme (OSC 11), telle qu'il l'a ecrite.
+    sig_fond = Signal(str)
 
     #: Retrait du contenu par rapport au cadre, en pixels : un pour le trait, trois pour
     #: laisser voir l'arrondi des coins (SIZE_BORDER_RADIUS vaut 4 dans le theme).
@@ -286,6 +300,8 @@ class VueKonsole(QFrame):
                  couleur_fond=None, couleur_texte=None, couleur_fond_intense=None):
         super().__init__(parent)
         self.setObjectName("terminal_smartos")   # cible de la feuille de style du cadre
+        self._fond = None                        # fond du jeu actif, cf. _poser_fond
+        self._liseret = None                     # second trait du focus, cf. poser_liseret
         self.setFrameShape(QFrame.NoFrame)       # le cadre vient de la feuille, pas de Qt
         if not DISPONIBLE:
             raise RuntimeError(
@@ -317,7 +333,10 @@ class VueKonsole(QFrame):
         self._terminal.finished.connect(self._sur_fin)
         self._terminal.titleChanged.connect(self._sur_titre)
         self._terminal.receivedData.connect(self.sig_sortie)
+        self._osc_en_cours = ""
+        self._terminal.receivedData.connect(self._sur_donnees)
         self._poser_raccourcis()
+        self._poser_fond(fond_du_schema(self._schema))
 
     # ------------------------------------------------------------- apparence
 
@@ -351,11 +370,10 @@ class VueKonsole(QFrame):
         """Change le jeu de couleurs de CETTE session, a chaud. Sans nom : celui d'origine.
 
         C'est ainsi que le greffon Claude reproduit le fond rouge/vert que
-        `claude-window.sh` pose sur une vraie fenetre Konsole par sequence OSC. La
-        sequence, elle, n'est PAS envoyee a un panneau : le jeu de couleurs de
-        qtermwidget est le chemin sur : il est relu par le moteur meme si le programme en
-        cours redessine tout l'ecran, alors qu'une sequence OSC ecrite en concurrence
-        d'un plein ecran se fait avaler (c'est pourquoi le hook l'ecrit trois fois).
+        `claude-window.sh` pose sur une vraie fenetre Konsole par sequence OSC 11.
+        qtermwidget ignore cette sequence : `_sur_donnees` la publie (`sig_fond`), et c'est
+        le greffon qui la traduit en jeu de couleurs. Le jeu, lui, est le chemin sur : il
+        est relu par le moteur meme si le programme en cours redessine tout l'ecran.
         """
         nom = nom or self._schema
         if not nom:
@@ -364,7 +382,57 @@ class VueKonsole(QFrame):
             self._terminal.setColorScheme(nom)
         except Exception:      # jeu inconnu : on garde celui en place, sans casser
             return False
+        self._poser_fond(fond_du_schema(nom))
         return True
+
+    def _poser_fond(self, couleur):
+        """Etend le fond du jeu a la marge du cadre et sous la barre de defilement.
+
+        qtermwidget ne peint que sa zone de texte. Sans ce geste, la marge MARGE_CADRE
+        et le fond de la barre (feuille de style de Spyder) restaient au bleu de l'IDE :
+        un liseré bleu entre le fond rouge/vert d'une session Claude et son cadre
+        (signale par l'utilisateur le 10/10/2026). La feuille est posee sur le TERMINAL
+        et non sur la vue : celle de la vue appartient aux panneaux (cadre gris/bleu du
+        focus), qui la remplacent sans prevenir.
+        """
+        self._fond = couleur
+        # Sans selecteur : vaut pour le terminal ET ses enfants, donc aussi les marges
+        # de la barre, ou transparaissait le fond de QWidget de la feuille de Spyder.
+        self._terminal.setStyleSheet(
+            f"background-color: {couleur.name()};" if couleur is not None else "")
+        self.update()
+
+    def poser_liseret(self, couleur):
+        """Double le trait du cadre a l'interieur (couleur), ou le retire (None).
+
+        Le trait d'un pixel de la feuille de style ne suffisait pas a voir quelle session
+        a le clavier ; un trait de 2 pixels partout alourdissait les sessions au repos
+        (demandes de l'utilisateur, 10/10/2026). Le second pixel est donc peint, au focus
+        seulement, dans la marge MARGE_CADRE : le terminal ne change jamais de taille.
+        """
+        if couleur != self._liseret:
+            self._liseret = couleur
+            self.update()
+
+    def paintEvent(self, evenement):
+        # A l'interieur du trait : la feuille de style l'a deja trace, avant nous.
+        # Rectangles arrondis, pour ne pas deborder des coins du cadre.
+        if self._fond is not None or self._liseret is not None:
+            peintre = QPainter(self)
+            peintre.setRenderHint(QPainter.Antialiasing)
+            if self._fond is not None:
+                peintre.setPen(Qt.NoPen)
+                peintre.setBrush(self._fond)
+                peintre.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1),
+                                        self.MARGE_CADRE, self.MARGE_CADRE)
+            if self._liseret is not None:
+                # Trait d'un pixel centre sur la colonne 1 : d'ou le demi-pixel.
+                peintre.setPen(QPen(QColor(self._liseret), 1))
+                peintre.setBrush(Qt.NoBrush)
+                peintre.drawRoundedRect(QRectF(self.rect()).adjusted(1.5, 1.5, -1.5, -1.5),
+                                        self.MARGE_CADRE - 1, self.MARGE_CADRE - 1)
+            peintre.end()
+        super().paintEvent(evenement)
 
     #: Code de l'interruption (Ctrl+C) tel qu'il circule sur le pty.
     INTERRUPTION = "\x03"
@@ -497,6 +565,66 @@ class VueKonsole(QFrame):
         titre = self._terminal.title()
         if titre:
             self.sig_titre.emit(titre)
+
+    #: Introducteur d'une sequence OSC (« Operating System Command »).
+    OSC = "\x1b]"
+    #: Au-dela, une sequence jamais terminee est abandonnee plutot que gardee en memoire.
+    OSC_TAILLE_MAX = 8 * 1024 * 1024
+
+    def _sur_donnees(self, texte):
+        """Relaie les deux sequences OSC que QTermWidget IGNORE (mesure du 09/10/2026).
+
+        - OSC 52, ecriture du presse-papier : Claude Code en plein ecran capture la
+          souris, fait SA selection et la copie par OSC 52 quand aucun outil du systeme
+          (wl-copy, xclip) ne lui est accessible — cas du compte isole claude. Sans ce
+          relais, rien n'est copie : le glisser n'arrive pas a la selection de
+          qtermwidget (le suivi souris l'envoie au programme). Seule l'ECRITURE est
+          servie : la lecture (`?`) laisserait n'importe quel programme du terminal lire
+          le presse-papier de l'utilisateur.
+        - OSC 11, couleur de fond : `claude-parole.sh` signale ainsi l'etat de l'instance
+          (rouge = attend, vert = disponible). Le moteur ne l'applique pas lui-meme, il
+          la publie par `sig_fond` : c'est l'hote qui sait quoi en faire (le greffon
+          Claude la traduit en etat, avec pastille et mosaique). La question (`?`) n'est
+          pas une demande de changement, elle est ignoree.
+
+        Une sequence peut arriver coupee entre deux blocs : la fin non terminee est gardee
+        pour le suivant.
+        """
+        if self._osc_en_cours:
+            texte = self._osc_en_cours + texte
+            self._osc_en_cours = ""
+        debut = texte.find(self.OSC)
+        while debut != -1:
+            corps = debut + len(self.OSC)
+            fins = [i for i in (texte.find("\x07", corps), texte.find("\x1b\\", corps))
+                    if i != -1]
+            if not fins:
+                if len(texte) - debut <= self.OSC_TAILLE_MAX:
+                    self._osc_en_cours = texte[debut:]
+                return
+            fin = min(fins)
+            code, _, parametres = texte[corps:fin].partition(";")
+            if code == "52":
+                self._ecrire_presse_papier(parametres)
+            elif code == "11" and parametres and parametres != "?":
+                self.sig_fond.emit(parametres)
+            debut = texte.find(self.OSC, fin)
+
+    @staticmethod
+    def _ecrire_presse_papier(parametres):
+        import base64
+        from qtpy.QtGui import QClipboard, QGuiApplication
+
+        cibles, _, donnees = parametres.partition(";")
+        if donnees == "?":
+            return
+        try:
+            contenu = base64.b64decode(donnees, validate=True).decode("utf-8", "replace")
+        except ValueError:  # binascii.Error en herite
+            return
+        mode = (QClipboard.Selection if cibles and set(cibles) <= set("ps")
+                else QClipboard.Clipboard)
+        QGuiApplication.clipboard().setText(contenu, mode)
 
     def _sur_fin(self):
         self.sig_termine.emit(0)

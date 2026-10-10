@@ -74,6 +74,9 @@ class FausseVue(QWidget):
     def arreter(self, force=False):
         self.arrets.append(force)
 
+    def poser_liseret(self, couleur):
+        self._liseret = couleur
+
 
 def panneau():
     p = Banc(name="native_terminal", plugin=None, parent=None)

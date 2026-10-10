@@ -398,5 +398,140 @@ class TestCtrlCSimple(BaseTerminal):
             lambda: "COLLE_CTRL_V_SIMPLE" in self.contenu()))
 
 
+class TestOsc52(BaseTerminal):
+    """Le programme ecrit le presse-papier par OSC 52 (demande du 09/10/2026).
+
+    C'est la voie de copie de Claude Code en plein ecran : il capture la souris, donc la
+    selection de qtermwidget reste vide, et sa propre selection n'arrive au presse-papier
+    que par cette sequence — que qtermwidget ignore de lui-meme.
+    """
+
+    def _presse_papier_apres(self, script):
+        from qtpy.QtGui import QGuiApplication
+        QGuiApplication.clipboard().setText("AVANT")
+        self.vue.demarrer(commande=["/bin/sh", "-c", script + "; sleep 5"])
+        attendre(lambda: QGuiApplication.clipboard().text() != "AVANT", 3000)
+        return QGuiApplication.clipboard().text()
+
+    def test_le_programme_ecrit_le_presse_papier(self):
+        # "T1NDNTJfT0s=" = base64("OSC52_OK"), terminee par BEL
+        self.assertEqual(self._presse_papier_apres(
+            r"printf '\033]52;c;T1NDNTJfT0s=\007'"), "OSC52_OK")
+
+    def test_sequence_coupee_entre_deux_blocs(self):
+        # deux ecritures separees par une pause : deux blocs recus, terminee par ST
+        self.assertEqual(self._presse_papier_apres(
+            r"printf '\033]52;c;T1NDNT'; sleep 0.3; printf 'JfT0s=\033\\'"), "OSC52_OK")
+
+    def test_la_lecture_du_presse_papier_est_refusee(self):
+        from qtpy.QtGui import QGuiApplication
+        QGuiApplication.clipboard().setText("SECRET")
+        self.vue.demarrer(commande=["/bin/sh", "-c",
+                                    r"printf '\033]52;c;?\007'; sleep 5"])
+        attendre(lambda: "SECRET" in self.contenu(), 1500)
+        self.assertNotIn("SECRET", self.contenu())
+        self.assertEqual(QGuiApplication.clipboard().text(), "SECRET")
+
+
+
+class TestOsc11(BaseTerminal):
+    """Le programme demande une couleur de fond par OSC 11 (demande du 09/10/2026).
+
+    C'est par elle que `claude-parole.sh` signale l'etat d'une instance du compte isole :
+    le registre d'etat de ce compte ne dit pas a quel onglet appartient l'instance, donc
+    la sequence sur le pty est le SEUL signal qui atteint le panneau.
+    """
+
+    def _couleurs_apres(self, script):
+        recues = []
+        self.vue.sig_fond.connect(recues.append)
+        self.vue.demarrer(commande=["/bin/sh", "-c", script + "; sleep 5"])
+        attendre(lambda: recues, 3000)
+        return recues
+
+    def test_la_couleur_demandee_est_publiee(self):
+        self.assertEqual(self._couleurs_apres(r"printf '\033]11;#3a1414\007'"),
+                         ["#3a1414"])
+
+    def test_la_question_n_est_pas_une_demande(self):
+        # doit rester SILENCIEUX : `?` demande la couleur, il n'en impose aucune
+        self.assertEqual(self._couleurs_apres(
+            r"printf '\033]11;?\007'; printf '\033]0;titre\007'"), [])
+
+
+
+class TestFondJusquAuCadre(unittest.TestCase):
+    """Le fond du jeu doit aller jusqu'au trait du cadre, barre de defilement comprise.
+
+    Defaut signale le 10/10/2026 : un liseré du bleu de l'IDE entre le fond rouge/vert
+    d'une session Claude et son cadre, et derriere la barre. Le parent porte ici un temoin du
+    fond de QWidget de la feuille de Spyder, qui est ce qui transparaissait.
+    """
+
+    #: Temoin du fond de QWidget de Spyder. PAS #19232D lui-meme : les autres tests ont
+    #: deja fait du jeu « SpyderFond » ce bleu-la, et qtermwidget garde ses jeux en cache
+    #: pour tout le processus — le terminal le peindrait legitimement.
+    BLEU_IDE = "#0000ff"
+
+    def test_aucun_pixel_du_bleu_de_l_ide_dans_le_cadre(self):
+        from qtpy.QtWidgets import QVBoxLayout, QWidget
+        from spyder_konsole.konsole_view import VueKonsole
+        parent = QWidget()
+        parent.setStyleSheet("QWidget { background-color: %s; }" % self.BLEU_IDE)
+        vue = VueKonsole(parent, couleur_fond="#3a1414", couleur_texte="#DFE1E2")
+        vue.setStyleSheet("QFrame#terminal_smartos { border: 1px solid #ff00ff;"
+                          " border-radius: 4px; }")
+        QVBoxLayout(parent).addWidget(vue)
+        parent.resize(403, 200)
+        parent.show()
+        try:
+            vue.demarrer(commande=["/bin/sh"])
+            self.assertTrue(attendre(lambda: vue._terminal.getShellPID() > 0))
+            image = vue.grab().toImage()
+            largeur, hauteur = image.width(), image.height()
+            # Les coins exterieurs a l'arrondi montrent legitimement le parent.
+            coin = 3
+            bleus = [(x, y) for y in range(hauteur) for x in range(largeur)
+                     if image.pixelColor(x, y).name() == self.BLEU_IDE
+                     and not ((x < coin or x >= largeur - coin)
+                              and (y < coin or y >= hauteur - coin))]
+            self.assertEqual(bleus[:10], [])
+        finally:
+            vue.arreter(force=True)
+            parent.deleteLater()
+            APPLICATION.processEvents()
+
+
+class TestLiseretDuFocus(unittest.TestCase):
+    """Au focus, un second pixel bleu double le trait d'un pixel ; au repos, rien.
+
+    Demande de l'utilisateur, 10/10/2026 : un trait plus visible au focus, sans alourdir
+    les sessions au repos ni changer la taille du terminal.
+    """
+
+    def test_le_liseret_double_le_trait_au_focus_seulement(self):
+        from spyder_konsole.konsole_view import VueKonsole
+        vue = VueKonsole(couleur_fond="#3a1414", couleur_texte="#DFE1E2")
+        vue.setStyleSheet("QFrame#terminal_smartos { border: 1px solid #ff00ff;"
+                          " border-radius: 4px; }")
+        vue.resize(400, 200)
+        try:
+            milieu = vue.grab().toImage()
+            taille = vue._terminal.size()      # apres le grab : la mise en page est faite
+            # colonne 1 : juste a l'interieur du trait, au milieu du bord gauche
+            self.assertEqual(milieu.pixelColor(1, 100).name(), "#3a1414")
+            vue.poser_liseret("#00ff00")
+            image = vue.grab().toImage()
+            self.assertEqual(image.pixelColor(0, 100).name(), "#ff00ff")
+            self.assertEqual(image.pixelColor(1, 100).name(), "#00ff00")
+            self.assertEqual(image.pixelColor(2, 100).name(), "#3a1414")
+            self.assertEqual(vue._terminal.size(), taille)
+            vue.poser_liseret(None)
+            self.assertEqual(vue.grab().toImage().pixelColor(1, 100).name(), "#3a1414")
+        finally:
+            vue.deleteLater()
+            APPLICATION.processEvents()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

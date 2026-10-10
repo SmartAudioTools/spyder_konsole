@@ -170,6 +170,11 @@ class PanneauTerminal(PluginMainWidget):
         # demarrage (mesure du 05/10/2026, banc de demarrage).
         if feuille != self.styleSheet():
             self.setStyleSheet(feuille)
+        # Le second pixel du trait bleu, peint par la vue elle-meme (cf.
+        # VueKonsole.poser_liseret) : 2 pixels au focus, 1 au repos, sans que la feuille
+        # change l'epaisseur du cadre, donc la taille du terminal.
+        for vue in self._vues:
+            vue.poser_liseret(SpyderPalette.COLOR_ACCENT_3 if focus else None)
         # ⚠ EN MOSAIQUE, CETTE FEUILLE NE SUFFIT PLUS. Elle descend a TOUTES les vues, et
         # elles sont alors toutes affichees : le panneau annoncerait autant de sessions
         # actives qu'il a de cellules. On reprend donc la main vue par vue. En onglets, le
@@ -523,6 +528,7 @@ class PanneauTerminal(PluginMainWidget):
                 "QFrame#terminal_smartos {"
                 f" border: 1px solid {couleur};"
                 f" border-radius: {SpyderPalette.SIZE_BORDER_RADIUS}; }}")
+            vue.poser_liseret(SpyderPalette.COLOR_ACCENT_3 if a_le_clavier else None)
 
     def _rendre_les_cadres_au_panneau(self):
         """Efface les feuilles par vue, pour que celle du panneau reprenne la main.
