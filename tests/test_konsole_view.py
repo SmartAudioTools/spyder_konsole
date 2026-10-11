@@ -510,7 +510,7 @@ class TestLiseretDuFocus(unittest.TestCase):
     """
 
     def test_le_liseret_double_le_trait_au_focus_seulement(self):
-        from spyder_konsole.konsole_view import VueKonsole
+        from spyder_konsole.konsole_view import VueKonsole, eclaircir
         vue = VueKonsole(couleur_fond="#3a1414", couleur_texte="#DFE1E2")
         vue.setStyleSheet("QFrame#terminal_smartos { border: 1px solid #ff00ff;"
                           " border-radius: 4px; }")
@@ -524,10 +524,17 @@ class TestLiseretDuFocus(unittest.TestCase):
             image = vue.grab().toImage()
             self.assertEqual(image.pixelColor(0, 100).name(), "#ff00ff")
             self.assertEqual(image.pixelColor(1, 100).name(), "#00ff00")
-            self.assertEqual(image.pixelColor(2, 100).name(), "#3a1414")
+            # Au focus, le fond s'eclaircit (demande du 11/10/2026) : la marge ET le
+            # terminal lui-meme, qui est passe au jeu jumeau.
+            clair = eclaircir("#3a1414")
+            self.assertNotEqual(clair, "#3a1414")
+            self.assertEqual(image.pixelColor(2, 100).name(), clair)
+            self.assertEqual(image.pixelColor(200, 100).name(), clair)
             self.assertEqual(vue._terminal.size(), taille)
             vue.poser_liseret(None)
-            self.assertEqual(vue.grab().toImage().pixelColor(1, 100).name(), "#3a1414")
+            image = vue.grab().toImage()
+            self.assertEqual(image.pixelColor(1, 100).name(), "#3a1414")
+            self.assertEqual(image.pixelColor(200, 100).name(), "#3a1414")
         finally:
             vue.deleteLater()
             APPLICATION.processEvents()

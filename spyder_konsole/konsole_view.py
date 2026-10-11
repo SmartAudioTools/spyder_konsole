@@ -56,8 +56,8 @@ spyder/main_widget.py, _afficher_absence_du_binding.
 import configparser
 import os
 
-from qtpy.QtCore import QRectF, Qt, Signal
-from qtpy.QtGui import QColor, QKeySequence, QPainter, QPen, QShortcut
+from qtpy.QtCore import QPointF, QRectF, Qt, Signal
+from qtpy.QtGui import QColor, QKeySequence, QPainter, QPainterPath, QPen, QShortcut
 from qtpy.QtWidgets import QFrame, QVBoxLayout
 
 #: Le module natif est produit par qtermwidget_binding/build.sh (racine de ce depot). Son absence n'est
@@ -85,6 +85,17 @@ DOSSIER_SCHEMAS = os.path.expanduser("~/.local/share/smartpythoneditor/qtermwidg
 
 #: Jeux de couleurs de repli, si le profil n'en nomme aucun.
 SCHEMAS_PREFERES = ("BreezeModified", "Breeze", "Linux", "BlackOnWhite")
+
+#: Fond de la session qui a le clavier, et de son onglet : eclairci de 12 % (valeur HSV),
+#: « tres legerement » (demande de l'utilisateur, 11/10/2026). Chaque jeu derive a son
+#: jumeau eclairci, suffixe SUFFIXE_FOCUS, ecrit en meme temps que lui.
+ECLAIRCISSEMENT = 112
+SUFFIXE_FOCUS = "Focus"
+
+
+def eclaircir(couleur):
+    """La couleur (nom ou QColor) telle qu'au focus, en nom #rrggbb."""
+    return QColor(couleur).lighter(ECLAIRCISSEMENT).name()
 
 
 def _lire_ini(chemin):
@@ -230,6 +241,11 @@ def preparer_schema(profil, fond, texte, fond_intense=None, nom_derive="SpyderFo
                                                fond_intense, nom_derive)
         if derive:
             nom = derive
+            # Le jumeau du focus, ici et pas plus tard : qtermwidget met la liste des jeux
+            # en cache a la premiere lecture (cf. docstring).
+            schema_aux_couleurs_de_spyder(base, eclaircir(fond), texte or "#DFE1E2",
+                                          eclaircir(fond_intense or fond),
+                                          nom_derive + SUFFIXE_FOCUS)
             if not _dossier_declare and _qtw is not None:
                 _qtw.QTermWidget.addCustomColorSchemeDir(DOSSIER_SCHEMAS)
                 _dossier_declare = True
@@ -275,6 +291,20 @@ def schema_aux_couleurs_de_spyder(base, fond, texte, fond_intense=None,
     return nom
 
 
+def _coin_carre(rect, rayon):
+    """Rectangle aux coins arrondis, sauf le coin haut gauche, carre."""
+    chemin = QPainterPath()
+    chemin.moveTo(rect.topLeft())
+    chemin.lineTo(rect.right() - rayon, rect.top())
+    chemin.quadTo(rect.topRight(), rect.topRight() + QPointF(0, rayon))
+    chemin.lineTo(rect.right(), rect.bottom() - rayon)
+    chemin.quadTo(rect.bottomRight(), rect.bottomRight() - QPointF(rayon, 0))
+    chemin.lineTo(rect.left() + rayon, rect.bottom())
+    chemin.quadTo(rect.bottomLeft(), rect.bottomLeft() - QPointF(0, rayon))
+    chemin.closeSubpath()
+    return chemin
+
+
 class VueKonsole(QFrame):
     """Une session de terminal servie par le moteur de Konsole.
 
@@ -302,6 +332,8 @@ class VueKonsole(QFrame):
         self.setObjectName("terminal_smartos")   # cible de la feuille de style du cadre
         self._fond = None                        # fond du jeu actif, cf. _poser_fond
         self._liseret = None                     # second trait du focus, cf. poser_liseret
+        self._double = True                      # le liseret est-il peint ? cf. poser_liseret
+        self._schema_base = None                 # jeu demande, hors focus, cf. appliquer_schema
         self.setFrameShape(QFrame.NoFrame)       # le cadre vient de la feuille, pas de Qt
         if not DISPONIBLE:
             raise RuntimeError(
@@ -379,9 +411,12 @@ class VueKonsole(QFrame):
         le greffon qui la traduit en jeu de couleurs. Le jeu, lui, est le chemin sur : il
         est relu par le moteur meme si le programme en cours redessine tout l'ecran.
         """
-        nom = nom or self._schema
+        self._schema_base = nom = nom or self._schema
         if not nom:
             return False
+        # Au focus, le jumeau eclairci, s'il existe (un jeu de base non derive n'en a pas).
+        if self._liseret is not None and _fichier_schema(nom + SUFFIXE_FOCUS):
+            nom += SUFFIXE_FOCUS
         try:
             self._terminal.setColorScheme(nom)
         except Exception:      # jeu inconnu : on garde celui en place, sans casser
@@ -406,35 +441,44 @@ class VueKonsole(QFrame):
             f"background-color: {couleur.name()};" if couleur is not None else "")
         self.update()
 
-    def poser_liseret(self, couleur):
+    def poser_liseret(self, couleur, double=True):
         """Double le trait du cadre a l'interieur (couleur), ou le retire (None).
 
         Le trait d'un pixel de la feuille de style ne suffisait pas a voir quelle session
         a le clavier ; un trait de 2 pixels partout alourdissait les sessions au repos
         (demandes de l'utilisateur, 10/10/2026). Le second pixel est donc peint, au focus
         seulement, dans la marge MARGE_CADRE : le terminal ne change jamais de taille.
+
+        `double=False` : focus sans second pixel (fond eclairci seul). En onglets, les
+        autres volets de Spyder gardent 1 pixel au focus ; le doublement est reserve a la
+        mosaique, ou il faut distinguer la cellule active (demande du 11/10/2026).
         """
-        if couleur != self._liseret:
+        if couleur != self._liseret or double != self._double:
             self._liseret = couleur
+            self._double = double
+            # Le liseret marque le focus ; le fond eclairci aussi (demande du 11/10/2026).
+            # `appliquer_schema` choisit le jumeau selon `_liseret`, deja a jour.
+            self.appliquer_schema(self._schema_base)
             self.update()
 
     def paintEvent(self, evenement):
         # A l'interieur du trait : la feuille de style l'a deja trace, avant nous.
-        # Rectangles arrondis, pour ne pas deborder des coins du cadre.
+        # Rectangles arrondis, pour ne pas deborder des coins du cadre - sauf en haut a
+        # gauche, carre comme celui de la feuille (l'onglet actif s'y raccorde).
         if self._fond is not None or self._liseret is not None:
             peintre = QPainter(self)
             peintre.setRenderHint(QPainter.Antialiasing)
             if self._fond is not None:
                 peintre.setPen(Qt.NoPen)
                 peintre.setBrush(self._fond)
-                peintre.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1),
-                                        self.MARGE_CADRE, self.MARGE_CADRE)
-            if self._liseret is not None:
+                peintre.drawPath(_coin_carre(QRectF(self.rect()).adjusted(1, 1, -1, -1),
+                                             self.MARGE_CADRE))
+            if self._liseret is not None and self._double:
                 # Trait d'un pixel centre sur la colonne 1 : d'ou le demi-pixel.
                 peintre.setPen(QPen(QColor(self._liseret), 1))
                 peintre.setBrush(Qt.NoBrush)
-                peintre.drawRoundedRect(QRectF(self.rect()).adjusted(1.5, 1.5, -1.5, -1.5),
-                                        self.MARGE_CADRE - 1, self.MARGE_CADRE - 1)
+                peintre.drawPath(_coin_carre(QRectF(self.rect()).adjusted(1.5, 1.5, -1.5, -1.5),
+                                             self.MARGE_CADRE - 1))
             peintre.end()
         super().paintEvent(evenement)
 

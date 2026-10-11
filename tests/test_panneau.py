@@ -74,8 +74,8 @@ class FausseVue(QWidget):
     def arreter(self, force=False):
         self.arrets.append(force)
 
-    def poser_liseret(self, couleur):
-        self._liseret = couleur
+    def poser_liseret(self, couleur, double=True):
+        self._liseret, self._double = couleur, double
 
 
 def panneau():

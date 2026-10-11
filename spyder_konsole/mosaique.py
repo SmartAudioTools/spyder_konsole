@@ -29,8 +29,10 @@ Aucun import Spyder : le module se deroule dans un test offscreen ordinaire.
 import math
 
 from qtpy.QtCore import Qt, Signal
-from qtpy.QtWidgets import (QFrame, QHBoxLayout, QLabel, QSizePolicy, QSplitter,
-                            QStyle, QToolButton, QVBoxLayout, QWidget)
+from qtpy.QtWidgets import (QFrame, QHBoxLayout, QLabel, QSizePolicy, QSpacerItem,
+                            QSplitter, QStyle, QToolButton, QVBoxLayout, QWidget)
+
+from spyder_konsole.konsole_view import eclaircir
 
 
 #: Cote des boutons d'action de la mosaique, en pixels logiques. 44 est la taille des
@@ -60,6 +62,37 @@ def disposition(nombre):
     return tailles
 
 
+class _Onglet(QFrame):
+    """L'onglet de titre d'une cellule ; `_liseret` y marque le focus (fond eclairci).
+
+    Trait d'1 pixel, focus compris : le second pixel peint au focus est reserve aux
+    cellules de Claude (demande de l'utilisateur, 11/10/2026 : « ne l'utilise en
+    2 pixels qu'avec claude en vue mosaique »).
+    """
+
+    _liseret = None
+
+    def poser_liseret(self, couleur):
+        if couleur != self._liseret:
+            self._liseret = couleur
+            self.update()
+
+
+class _LigneSousOnglet(QHBoxLayout):
+    """Ligne de la vue, remontee de `debord` pixels sous l'onglet de titre qui la precede.
+
+    Une marge haute NEGATIVE aurait ete la voie directe : Qt la ramene a 0 (mesure du
+    11/10/2026, `contentsMargins().top()` relu a 0 apres `setContentsMargins(1, -2, ...)`).
+    """
+
+    def __init__(self, debord):
+        super().__init__()
+        self._debord = debord
+
+    def setGeometry(self, rect):
+        super().setGeometry(rect.adjusted(0, -self._debord, 0, 0))
+
+
 class Cellule(QFrame):
     """Une case de la mosaique : un bandeau de titre, et la vue en dessous.
 
@@ -77,6 +110,12 @@ class Cellule(QFrame):
     #: demande de l'utilisateur, apres l'alignement des boutons.
     MARGE_TERMINAL = 1
 
+    #: De combien l'onglet de titre DESCEND sur le cadre de la vue : l'epaisseur du cadre
+    #: au focus (trait de la feuille + liseret, cf. VueKonsole.poser_liseret). Son fond
+    #: couvre ces deux lignes, d'ou le « trou » qui l'ouvre sur la vue, comme l'onglet
+    #: actif sur son volet (TABS_PATCH du fork, 11/10/2026).
+    DEBORD_ONGLET = 2
+
     #: Retraits du TEXTE du titre, en pixels logiques, pour l'aligner sur le titre d'un
     #: onglet.
     #:
@@ -87,20 +126,13 @@ class Cellule(QFrame):
     #: sur le style, le titre de la mosaique est parti a 23 — j'ai casse un alignement qui
     #: existait. Le cote reste donc a 6, valeur d'origine.
     #:
-    #: Seule la HAUTEUR demandait correction : 34 px physiques en onglets contre 27 en
-    #: mosaique. Un QLabel centre son contenu, donc un ecart H - BAS abaisse le texte de la
-    #: moitie : il faut 11 px d'ecart pour descendre de 5,4 logiques (7 physiques).
+    #: En HAUTEUR, le retrait donne a l'onglet de la cellule celle d'un onglet du mode
+    #: onglets : 31 px logiques au-dessus du cadre, pour un texte de 17 (banc du
+    #: 11/10/2026). Les rangees compactes gardent un onglet bas : elles existent pour
+    #: gagner de la hauteur (demande du 10/10/2026).
     RETRAIT_TEXTE_COTE = 6
-    RETRAIT_TEXTE_HAUT = 13
-    RETRAIT_TEXTE_BAS = 2
-
-    #: De combien DESCENDRE et DECALER A GAUCHE le dessin de la croix, en pixels logiques,
-    #: pour qu'il tombe ou tombe celui d'un onglet. Le bouton, lui, est deja bien place :
-    #: c'est `CloseTabButton` qui dessine son icone plus bas dans son cadre. Mesure sur
-    #: capture (27/07/2026) : 5 px physiques d'ecart dans chaque direction, soit ~4
-    #: logiques. Un remplissage asymetrique decale le dessin de sa MOITIE, d'ou le double.
-    DECALAGE_CROIX_BAS = 8
-    DECALAGE_CROIX_GAUCHE = 8
+    RETRAIT_TEXTE_VERTICAL = 7
+    RETRAIT_TEXTE_COMPACT = 2
 
     #: Emis quand l'utilisateur clique la croix de CETTE cellule. La mosaique le relaie
     #: avec la vue concernee ; c'est le panneau qui sait arreter une session.
@@ -118,10 +150,8 @@ class Cellule(QFrame):
         d'une rangee ont le meme reglage, donc leurs terminaux restent alignes.
         """
         super().__init__(parent)
-        #: Retrait haut du TEXTE : celui de l'onglet, ou le retrait bas en bandeau compact
-        #: (titre centre, plus rien a aligner).
-        self._retrait_haut = (self.RETRAIT_TEXTE_BAS if compacte
-                              else self.RETRAIT_TEXTE_HAUT)
+        self._retrait_vertical = (self.RETRAIT_TEXTE_COMPACT if compacte
+                                  else self.RETRAIT_TEXTE_VERTICAL)
         self.setObjectName("cellule_claude")
         self.setFrameShape(QFrame.NoFrame)
         self.vue = vue
@@ -159,8 +189,32 @@ class Cellule(QFrame):
         # 27/07/2026). On la pose sur l'etiquette plutot que sur le layout : c'est elle qui
         # dimensionne la ligne, et le titre s'y centre verticalement tout seul.
         if not compacte:
-            self._etiquette.setMinimumHeight(TAILLE_BOUTON)
-        self._ligne_titre.addWidget(self._etiquette)
+            # Les 44 px vont a la RANGEE, pas a l'etiquette : posees sur elle, sa couleur
+            # d'etat remplissait toute la hauteur (« trop de hauteur sur les fenetres du
+            # haut », utilisateur, 10/10/2026). Etiquette centree, et sa marge haute
+            # (`poser_couleur`) garde le texte a la hauteur de celui des onglets.
+            self._ligne_titre.addItem(QSpacerItem(
+                0, TAILLE_BOUTON, QSizePolicy.Minimum, QSizePolicy.Fixed))
+        # LE TITRE ET SA CROIX FORMENT UN ONGLET, ouvert sur la vue comme l'onglet actif
+        # sur son volet. Demande de l'utilisateur (11/10/2026) : « il faut mettre en place
+        # le meme dispositif avec le titre et les fenetres en mode mosaique ». Cale EN BAS
+        # de la ligne de titre, et la vue remonte de DEBORD_ONGLET sous lui (cf.
+        # `_LigneSousOnglet`) ; leve au-dessus d'elle a la fin du constructeur.
+        self._onglet = _Onglet(self)
+        self._onglet.setObjectName("onglet_cellule_claude")
+        dans_onglet = QHBoxLayout(self._onglet)
+        # A droite, la croix ne doit pas toucher le bord de l'onglet.
+        dans_onglet.setContentsMargins(0, 0, self.MARGE, self.DEBORD_ONGLET)
+        # Sans espacement : le retrait droit de l'etiquette suffit, et la croix tombe a la
+        # meme distance du texte qu'en mode onglets (banc du 11/10/2026).
+        dans_onglet.setSpacing(0)
+        dans_onglet.addWidget(self._etiquette, 0, Qt.AlignVCenter)
+        self._ligne_titre.addWidget(self._onglet, 0, Qt.AlignBottom)
+        #: Couleurs de l'onglet : fond d'etat (`poser_couleur`), cadre et fond de la vue
+        #: (`poser_cadre`). Gardees pour reconstruire la feuille quand l'une change.
+        self._couleur_etat = None
+        self._couleur_cadre = "transparent"
+        self._fond_vue = "transparent"
 
         # LA CROIX DE FERMETURE, JUSTE A DROITE DU TITRE et sur sa ligne (demande de
         # l'utilisateur, 27/07/2026). Chaque cellule a la sienne : en mosaique il n'y a
@@ -173,21 +227,13 @@ class Cellule(QFrame):
             self.style().standardIcon(QStyle.SP_TitleBarCloseButton))
         self._bouton_fermer.setAutoRaise(True)
         self._bouton_fermer.setFocusPolicy(Qt.NoFocus)
-        # ⚠ CE REMPLISSAGE DEPLACE LE DESSIN, PAS LE BOUTON. Le bouton, lui, est deja a la
-        # bonne place — meme ordonnee que la croix d'un onglet (y=11 dans les deux modes).
-        # Mais `CloseTabButton` dessine son icone PLUS BAS dans son propre cadre : mesure
-        # sur capture du 27/07/2026, centre du dessin a (223,32) en onglets contre (228,27)
-        # en mosaique, soit 5 px physiques trop haut et 5 trop a droite. L'utilisateur l'a
-        # vu ; ma mesure, portant sur le widget, disait que tout allait bien.
-        # Un remplissage asymetrique decale l'icone de sa MOITIE : 8 px en donnent 4.
         self._bouton_fermer.setStyleSheet(
-            "QToolButton { padding: %dpx %dpx 0px 0px; margin: 0px; border: none; }"
-            % ((0, 0) if compacte
-               else (self.DECALAGE_CROIX_BAS, self.DECALAGE_CROIX_GAUCHE)))
+            "QToolButton { padding: 0px; margin: 0px; border: none; }")
         self._bouton_fermer.setFixedSize(self._bouton_fermer.iconSize())
         self._bouton_fermer.setToolTip("Fermer cette instance Claude")
         self._bouton_fermer.clicked.connect(self.sig_fermeture_demandee)
-        self._ligne_titre.addWidget(self._bouton_fermer)
+        dans_onglet.addWidget(self._bouton_fermer, 0, Qt.AlignVCenter)
+
         self._ligne_titre.addStretch(1)
 
         # ⚠ LA LIGNE DE TITRE ET LE TERMINAL N'ONT PAS LES MEMES MARGES, ET C'EST VOULU.
@@ -203,10 +249,11 @@ class Cellule(QFrame):
         disposition_verticale = QVBoxLayout(self)
         disposition_verticale.setContentsMargins(0, 0, 0, 0)
         disposition_verticale.setSpacing(0)
-        self._ligne_titre.setContentsMargins(self.MARGE, 0, 0, 0)
+        # L'onglet part du bord du terminal : son trait gauche prolonge celui du cadre.
+        self._ligne_titre.setContentsMargins(self.MARGE_TERMINAL, 0, 0, 0)
         disposition_verticale.addLayout(self._ligne_titre)
 
-        ligne_vue = QHBoxLayout()
+        ligne_vue = _LigneSousOnglet(self.DEBORD_ONGLET)
         ligne_vue.setContentsMargins(self.MARGE_TERMINAL, 0,
                                      self.MARGE_TERMINAL, self.MARGE_TERMINAL)
         ligne_vue.setSpacing(0)
@@ -219,6 +266,10 @@ class Cellule(QFrame):
         #: de detail qui se paie plus tard.
         self._ligne_vue = ligne_vue
         vue.show()
+        self._onglet.raise_()
+        # Pose les retraits du texte, donc la hauteur de l'onglet, meme pour un panneau
+        # qui ne colore jamais ses sessions (greffon Terminal).
+        self.poser_couleur(None)
 
     def poser_widget_de_titre(self, widget):
         """Ajoute `widget` a L'EXTREME DROITE de la ligne de titre.
@@ -287,26 +338,49 @@ class Cellule(QFrame):
         self._etiquette.setToolTip(titre)
 
     def poser_couleur(self, couleur, couleur_texte=None):
-        """Teinte le bandeau. `couleur` a None rend le bandeau au fond du panneau.
+        """Teinte l'onglet du titre. `couleur` a None lui rend le fond de la vue.
 
-        ⚠ LE REMPLISSAGE N'EST PAS DECORATIF, IL ALIGNE LE TEXTE sur celui des onglets.
-        Le style de Spyder dessine le titre d'un onglet a 14 px du bord et 16 px du haut
-        (releve par `SE_TabBarTabText` le 27/07/2026) ; sans ce calage, le titre d'une
-        cellule tombait a 11 et 13 — visible en basculant d'un mode a l'autre, et signale
-        par l'utilisateur. Les valeurs sont donc CALCULEES a partir du releve, pas
-        choisies : cf. `RETRAIT_TEXTE_*`.
+        Le remplissage de l'etiquette n'est pas decoratif : il aligne le texte sur celui
+        des onglets, cf. `RETRAIT_TEXTE_*`.
         """
-        if couleur:
-            style = "background-color: %s;" % couleur
-        else:
-            style = "background-color: transparent;"
+        # La couleur d'etat va au FOND DE L'ONGLET, comme la teinte d'un onglet en mode
+        # onglets (`_teinter_les_onglets`) ; l'etiquette reste transparente.
+        self._couleur_etat = couleur or None
+        style = "background-color: transparent;"
         if couleur_texte:
             style += " color: %s;" % couleur_texte
         self._etiquette.setStyleSheet(
-            "QLabel#entete_cellule_claude { %s padding: %dpx %dpx %dpx %dpx; "
-            "border-radius: 2px; }"
-            % (style, self._retrait_haut, self.RETRAIT_TEXTE_COTE,
-               self.RETRAIT_TEXTE_BAS, self.RETRAIT_TEXTE_COTE))
+            "QLabel#entete_cellule_claude { %s padding: %dpx %dpx %dpx %dpx; }"
+            % (style, self._retrait_vertical, self.RETRAIT_TEXTE_COTE,
+               self._retrait_vertical, self.RETRAIT_TEXTE_COTE))
+        self._habiller_onglet()
+
+    def poser_cadre(self, couleur, fond, liseret=None):
+        """Couleur du cadre de la vue, et son fond : l'onglet prolonge l'un et l'autre.
+
+        `liseret` : couleur du second pixel au focus, None au repos (cf. `_Onglet`)."""
+        self._couleur_cadre, self._fond_vue = couleur, fond
+        self._onglet.poser_liseret(liseret)
+        self._habiller_onglet()
+
+    def _fond_onglet(self):
+        """Fond de la vue, ou sa couleur d'etat ; eclairci au focus, comme le terminal."""
+        fond = self._couleur_etat or self._fond_vue
+        if self._onglet._liseret is not None and fond != "transparent":
+            return eclaircir(fond)
+        return fond
+
+    def _habiller_onglet(self):
+        feuille = (
+            "QFrame#onglet_cellule_claude { background-color: %s;"
+            " border: 1px solid %s; border-bottom: 0px;"
+            # Rayon remis a 0 d'abord : la feuille de Spyder arrondit aussi le BAS des
+            # QFrame, qui ecornait la jonction avec la vue (banc du 11/10/2026).
+            " border-radius: 0px;"
+            " border-top-left-radius: 4px; border-top-right-radius: 4px; }"
+            % (self._fond_onglet(), self._couleur_cadre))
+        if feuille != self._onglet.styleSheet():
+            self._onglet.setStyleSheet(feuille)
 
     def liberer(self):
         """Detache la vue et la rend a l'appelant. La cellule devient jetable.
@@ -721,3 +795,8 @@ class Mosaique(QWidget):
         cellule = self.cellule_de(vue)
         if cellule is not None:
             cellule.poser_couleur(couleur, couleur_texte)
+
+    def poser_cadre(self, vue, couleur, fond, liseret=None):
+        cellule = self.cellule_de(vue)
+        if cellule is not None:
+            cellule.poser_cadre(couleur, fond, liseret)

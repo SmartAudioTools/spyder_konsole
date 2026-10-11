@@ -73,6 +73,8 @@ class PanneauTerminal(PluginMainWidget):
         self._onglets = Tabs(self, rename_tabs=True, split_char="/", split_index=0)
         self._onglets.setDocumentMode(True)
         self._onglets.setMovable(True)
+        # Gardee a part : `_appliquer_cadre` y ajoute la couleur du cadre pour l'onglet actif.
+        self._feuille_onglets = self._onglets.styleSheet()
         # set_close_function : l'API de Spyder, celle qu'utilise la console. Elle fait
         # setTabsClosable(True) et branche tabCloseRequested — un seul appel au lieu de
         # deux, et surtout le meme chemin que le panneau de reference.
@@ -149,6 +151,7 @@ class PanneauTerminal(PluginMainWidget):
         """
         try:
             from spyder.utils.palette import SpyderPalette
+            from spyder.utils.stylesheet import smartos_editor_background
         except ImportError:                     # hors Spyder (tests)
             return
         couleur = (SpyderPalette.COLOR_ACCENT_3 if focus
@@ -163,18 +166,33 @@ class PanneauTerminal(PluginMainWidget):
         # a chaque ouverture.
         feuille = ("QFrame#terminal_smartos {"
                    f" border: 1px solid {couleur};"
-                   f" border-radius: {SpyderPalette.SIZE_BORDER_RADIUS}; }}")
+                   f" border-radius: {SpyderPalette.SIZE_BORDER_RADIUS};"
+                   # Coin haut gauche carre : l'onglet actif s'ouvre sur le volet (TABS_PATCH
+                   # du fork, 11/10/2026) ; un coin arrondi laissait une encoche au raccord.
+                   " border-top-left-radius: 0px; }")
+        # L'onglet actif prend la couleur du cadre qu'il prolonge. Sur le conteneur
+        # d'onglets, pas sur le panneau : la propre feuille du conteneur l'emporterait.
+        # Au focus, son fond s'eclaircit tres legerement, comme celui du terminal
+        # (konsole_view.ECLAIRCISSEMENT, demande du 11/10/2026). Son trait reste d'1 pixel,
+        # comme celui des autres volets de Spyder : les 2 pixels sont reserves a la
+        # mosaique (demande du 11/10/2026), ou la barre d'onglets est masquee.
+        epais = (f"background-color: {konsole_view.eclaircir(smartos_editor_background())};"
+                 if focus else "")
+        onglets = (self._feuille_onglets
+                   + "QTabBar#pane-tabbar::tab:selected,"
+                   f" QTabBar#pane-tabbar::tab:selected:hover {{ border-color: {couleur}; {epais} }}")
         # Seulement si elle CHANGE : cette methode est appelee a chaque changement de focus
         # de TOUTE l'application (QApplication.focusChanged), et reposer une feuille
         # identique fait quand meme repolir tout le panneau - 5 ms par appel, 19 appels au
         # demarrage (mesure du 05/10/2026, banc de demarrage).
         if feuille != self.styleSheet():
             self.setStyleSheet(feuille)
-        # Le second pixel du trait bleu, peint par la vue elle-meme (cf.
-        # VueKonsole.poser_liseret) : 2 pixels au focus, 1 au repos, sans que la feuille
-        # change l'epaisseur du cadre, donc la taille du terminal.
+        if onglets != self._onglets.styleSheet():
+            self._onglets.setStyleSheet(onglets)
+        # Le focus de la vue (fond eclairci), sans second pixel : en onglets le trait
+        # reste d'1 pixel ; la mosaique le double, cellule par cellule, ci-dessous.
         for vue in self._vues:
-            vue.poser_liseret(SpyderPalette.COLOR_ACCENT_3 if focus else None)
+            vue.poser_liseret(SpyderPalette.COLOR_ACCENT_3 if focus else None, double=False)
         # ⚠ EN MOSAIQUE, CETTE FEUILLE NE SUFFIT PLUS. Elle descend a TOUTES les vues, et
         # elles sont alors toutes affichees : le panneau annoncerait autant de sessions
         # actives qu'il a de cellules. On reprend donc la main vue par vue. En onglets, le
@@ -422,6 +440,10 @@ class PanneauTerminal(PluginMainWidget):
         """
         self._mosaique.poser_couleur_poignees(
             self._habillage_cache.get("couleur_fond"))
+        # Les cellules renaissent a chaque `disposer` : leurs onglets de titre n'ont pas
+        # encore la couleur du cadre de leur vue.
+        if self._en_mosaique:
+            self._repartir_les_cadres()
 
     def set_maximized_state(self, state):
         """Agrandir le panneau etale les onglets en mosaique ; le reduire les rassemble.
@@ -516,8 +538,10 @@ class PanneauTerminal(PluginMainWidget):
         """
         try:
             from spyder.utils.palette import SpyderPalette
-        except ImportError:                     # hors Spyder (tests)
+            from spyder.utils.stylesheet import smartos_editor_background
+        except ImportError:                     # hors Spyder (tests), ou Spyder non patche
             return
+        fond = smartos_editor_background()
         actif = self.focusWidget()
         for vue in self._vues:
             a_le_clavier = bool(actif is not None
@@ -527,8 +551,14 @@ class PanneauTerminal(PluginMainWidget):
             vue.setStyleSheet(
                 "QFrame#terminal_smartos {"
                 f" border: 1px solid {couleur};"
-                f" border-radius: {SpyderPalette.SIZE_BORDER_RADIUS}; }}")
-            vue.poser_liseret(SpyderPalette.COLOR_ACCENT_3 if a_le_clavier else None)
+                f" border-radius: {SpyderPalette.SIZE_BORDER_RADIUS};"
+                " border-top-left-radius: 0px; }")
+            vue.poser_liseret(SpyderPalette.COLOR_ACCENT_3 if a_le_clavier else None,
+                              double=False)   # 2 pixels : Claude seul, cf. VueKonsole
+            # Son onglet de titre prolonge ce cadre, comme l'onglet actif son volet.
+            self._mosaique.poser_cadre(
+                vue, couleur, fond,
+                SpyderPalette.COLOR_ACCENT_3 if a_le_clavier else None)
 
     def _rendre_les_cadres_au_panneau(self):
         """Efface les feuilles par vue, pour que celle du panneau reprenne la main.
@@ -719,7 +749,6 @@ class PanneauTerminal(PluginMainWidget):
         self._mosaique.disposer(self._elements())
         self._en_mosaique = True
         self._rafraichir_letat_affiche()
-        self._repartir_les_cadres()
 
     def _revenir_aux_onglets(self):
         self._rendre_les_cadres_au_panneau()

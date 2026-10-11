@@ -107,14 +107,18 @@ class TestMontage(BaseMosaique):
     def test_bandeau_compact_sous_la_premiere_rangee(self):
         """Sous la premiere rangee, le bandeau n'a plus a loger les boutons de 44 px :
         il ne doit pas separer deux terminaux d'autant de vide. Les terminaux d'une meme
-        rangee restent alignes."""
+        rangee restent alignes.
+
+        11/10/2026 : l'onglet de titre deborde de DEBORD_ONGLET px sur le cadre du terminal
+        (`_LigneSousOnglet`), donc le terminal de la premiere rangee commence a
+        TAILLE_BOUTON - DEBORD_ONGLET."""
         elements = self.elements(4)   # 2 rangees de 2
         self.mosaique.disposer(elements)
         self.hote.show()
         APPLICATION.processEvents()
         haut = [self.mosaique.cellule_de(vue) for vue, _ in elements[:2]]
         bas = [self.mosaique.cellule_de(vue) for vue, _ in elements[2:]]
-        self.assertGreaterEqual(haut[0].vue.y(), TAILLE_BOUTON)
+        self.assertGreaterEqual(haut[0].vue.y(), TAILLE_BOUTON - Cellule.DEBORD_ONGLET)
         self.assertLess(bas[0].vue.y(), TAILLE_BOUTON // 2 + 10)
         self.assertEqual(haut[0].vue.y(), haut[1].vue.y())
         self.assertEqual(bas[0].vue.y(), bas[1].vue.y())
@@ -133,10 +137,12 @@ class TestMontage(BaseMosaique):
         self.assertEqual(cellule.minimumSizeHint().width(), avant)
 
     def test_couleur_posee_sur_le_bandeau(self):
+        """11/10/2026 : la couleur d'etat est posee sur l'onglet (`_onglet`) qui porte le
+        titre et la croix, plus sur l'etiquette."""
         elements = self.elements(1)
         self.mosaique.disposer(elements)
         self.mosaique.poser_couleur(elements[0][0], "#3a1414", "#DFE1E2")
-        feuille = self.mosaique.cellule_de(elements[0][0])._etiquette.styleSheet()
+        feuille = self.mosaique.cellule_de(elements[0][0])._onglet.styleSheet()
         self.assertIn("#3a1414", feuille)
 
     def test_redisposer_ne_perd_personne(self):
