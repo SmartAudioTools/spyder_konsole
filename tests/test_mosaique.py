@@ -671,5 +671,34 @@ class TestAffichage(unittest.TestCase):
         self.assertTrue(self.mosaique._bouton_reduire.isVisible())
 
 
+class TestCongeDeLOnglet(unittest.TestCase):
+
+    def test_conge_concave_au_pied_du_flanc_droit(self):
+        """Demande du 12/10/2026 (« fait la mosaique du Terminal ») : l'onglet de titre se
+        raccorde au cadre de la vue par un conge concave, comme dans la mosaique de Claude,
+        au focus comme au repos. Sans lui, le flanc droit descend tout droit jusqu'au pied
+        de l'onglet : l'angle reste rouge ci-dessous."""
+        from spyder_konsole.mosaique import RAYON_CONGE
+        for liseret in ("#00ff00", None):
+            vue = QWidget()
+            cellule = Cellule(vue, "Essai")
+            cellule.poser_cadre("#ff0000", "#000000", liseret)
+            cellule.resize(400, 200)
+            cellule.show()
+            QApplication.processEvents()
+            image = cellule._onglet.grab().toImage()
+            rouge = lambda x, y: image.pixelColor(x, y).red() > 128 \
+                and image.pixelColor(x, y).green() < 100
+            h = image.height()
+            flanc = max(x for x in range(image.width()) if rouge(x, h // 2))
+            cadre = h - 2   # trait haut du cadre de la vue : avant-derniere ligne de l'onglet
+            etat = "focus" if liseret else "repos"
+            self.assertFalse(rouge(flanc, cadre), "%s : angle du flanc et du cadre non recouvert" % etat)
+            self.assertTrue(rouge(flanc + RAYON_CONGE, cadre), "%s : l'arc n'arrive pas sur le cadre" % etat)
+            self.assertTrue(any(rouge(flanc + d, cadre - 2) for d in range(1, RAYON_CONGE)),
+                            "%s : pas d'arc a droite du flanc" % etat)
+            cellule.deleteLater()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

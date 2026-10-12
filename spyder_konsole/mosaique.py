@@ -28,7 +28,8 @@ Aucun import Spyder : le module se deroule dans un test offscreen ordinaire.
 
 import math
 
-from qtpy.QtCore import Qt, Signal
+from qtpy.QtCore import QPointF, QRectF, Qt, Signal
+from qtpy.QtGui import QColor, QPainter, QPainterPath, QPen
 from qtpy.QtWidgets import (QFrame, QHBoxLayout, QLabel, QSizePolicy, QSpacerItem,
                             QSplitter, QStyle, QToolButton, QVBoxLayout, QWidget)
 
@@ -44,6 +45,13 @@ from spyder_konsole.konsole_view import eclaircir
 #: ligne grandir, et son terminal commencerait 27 px plus bas que celui des autres — mesure
 #: du 27/07/2026. Un desalignement se voit bien plus qu'une ligne un peu haute.
 TAILLE_BOUTON = 44
+
+#: Rayon du conge concave au pied du flanc droit de l'onglet de titre, celui des onglets
+#: du fork (SMARTOS_RAYON_CONGE). Importe par spyder_claude (mosaique, Claude Dock).
+RAYON_CONGE = 5
+#: Place laissee a droite de l'onglet pour ce conge : son rayon et 1px, qui porte le
+#: liseret dans la mosaique de Claude.
+MARGE_CONGE = RAYON_CONGE + 1
 
 
 def disposition(nombre):
@@ -68,14 +76,51 @@ class _Onglet(QFrame):
     Trait d'1 pixel, focus compris : le second pixel peint au focus est reserve aux
     cellules de Claude (demande de l'utilisateur, 11/10/2026 : « ne l'utilise en
     2 pixels qu'avec claude en vue mosaique »).
+
+    Au pied du flanc droit, un conge concave le raccorde au trait haut du cadre de la vue,
+    comme l'onglet actif du fork et l'onglet de la mosaique de Claude (« fait la mosaique
+    du Terminal », utilisateur, 12/10/2026) ; peint dans la marge droite de la feuille
+    (MARGE_CONGE), hors du cadre de l'onglet. Le flanc gauche prolonge le bord gauche du
+    cadre : pas de conge.
     """
 
     _liseret = None
+    _bord = _fond = None
 
     def poser_liseret(self, couleur):
         if couleur != self._liseret:
             self._liseret = couleur
             self.update()
+
+    def poser_conge(self, bord, fond):
+        """Couleurs du trait du cadre et du fond de l'onglet, reprises par le conge."""
+        if (bord, fond) != (self._bord, self._fond):
+            self._bord, self._fond = bord, fond
+            self.update()
+
+    def paintEvent(self, evenement):  # noqa: N802 - API Qt
+        QFrame.paintEvent(self, evenement)
+        if self._bord in (None, "transparent"):
+            return
+        # L'onglet descend de DEBORD_ONGLET sur la vue : le trait haut de son cadre est
+        # l'avant-derniere ligne de l'onglet, la derniere est deja dans la vue. Arc centre
+        # sur le milieu des pixels des traits (cf. patch_spyder_arrondi_onglet.py du
+        # generator) ; le fond de l'onglet recouvre d'abord l'angle droit des traits.
+        rayon = RAYON_CONGE
+        droite = self.width() - 1 - MARGE_CONGE   # flanc droit, au bord du cadre de la feuille
+        cx, cy = droite + 0.5 + rayon, self.height() - 1.5 - rayon
+        peintre = QPainter(self)
+        peintre.setRenderHint(QPainter.Antialiasing)
+        coin = QPainterPath()
+        coin.addRect(QRectF(droite, cy, rayon + 0.5, rayon + 0.5))
+        disque = QPainterPath()
+        disque.addEllipse(QPointF(cx, cy), rayon, rayon)
+        peintre.fillPath(coin.subtracted(disque), QColor(self._fond))
+        # Le bas du flanc, sur la derniere ligne (dans la vue), depasserait sous l'arc.
+        peintre.fillRect(QRectF(droite, cy + rayon + 0.5, 1, 1), QColor(self._fond))
+        peintre.setPen(QPen(QColor(self._bord), 1))
+        peintre.drawArc(QRectF(cx - rayon, cy - rayon, 2 * rayon, 2 * rayon), 180 * 16, 90 * 16)
+        peintre.end()
 
 
 class _LigneSousOnglet(QHBoxLayout):
@@ -377,10 +422,12 @@ class Cellule(QFrame):
             # Rayon remis a 0 d'abord : la feuille de Spyder arrondit aussi le BAS des
             # QFrame, qui ecornait la jonction avec la vue (banc du 11/10/2026).
             " border-radius: 0px;"
-            " border-top-left-radius: 4px; border-top-right-radius: 4px; }"
-            % (self._fond_onglet(), self._couleur_cadre))
+            " border-top-left-radius: 4px; border-top-right-radius: 4px;"
+            " margin-right: %dpx; }"
+            % (self._fond_onglet(), self._couleur_cadre, MARGE_CONGE))
         if feuille != self._onglet.styleSheet():
             self._onglet.setStyleSheet(feuille)
+        self._onglet.poser_conge(self._couleur_cadre, self._fond_onglet())
 
     def liberer(self):
         """Detache la vue et la rend a l'appelant. La cellule devient jetable.
