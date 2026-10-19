@@ -55,10 +55,11 @@ spyder/main_widget.py, _afficher_absence_du_binding.
 
 import configparser
 import os
+import re
 
 from qtpy.QtCore import QPointF, QRectF, Qt, Signal
 from qtpy.QtGui import QColor, QKeySequence, QPainter, QPainterPath, QPen, QShortcut
-from qtpy.QtWidgets import QFrame, QVBoxLayout
+from qtpy.QtWidgets import QFrame, QHBoxLayout, QWidget
 
 #: Le module natif est produit par qtermwidget_binding/build.sh (racine de ce depot). Son absence n'est
 #: pas une exception a l'import — le greffon doit pouvoir se charger pour AFFICHER qu'il
@@ -321,6 +322,9 @@ class VueKonsole(QFrame):
     sig_sortie = Signal()
     #: Couleur de fond demandee par le programme (OSC 11), telle qu'il l'a ecrite.
     sig_fond = Signal(str)
+    #: Le programme prend en main le defilement (True) ou le rend au terminal (False),
+    #: cf. _suivre_modes.
+    sig_defilement_au_programme = Signal(bool)
 
     #: Retrait du contenu par rapport au cadre, en pixels : un pour le trait, trois pour
     #: laisser voir l'arrondi des coins (SIZE_BORDER_RADIUS vaut 4 dans le theme).
@@ -353,7 +357,9 @@ class VueKonsole(QFrame):
 
         self._appliquer_apparence(police, taille_police)
 
-        layout = QVBoxLayout(self)
+        # Horizontal : une barre de defilement fournie par l'hote se range a droite du
+        # terminal, cf. ajouter_a_droite.
+        layout = QHBoxLayout(self)
         # Marge = epaisseur du cadre + rayon des coins. Sans elle, le terminal est OPAQUE
         # et peint PAR-DESSUS le cadre : c'est ce qui mangeait le coin bas-gauche, defaut
         # signale par l'utilisateur le 26/07/2026. Meme piege que l'ecran de jeu du
@@ -366,6 +372,8 @@ class VueKonsole(QFrame):
         self._terminal.titleChanged.connect(self._sur_titre)
         self._terminal.receivedData.connect(self.sig_sortie)
         self._osc_en_cours = ""
+        self._modes = set()                      # modes prives DEC actifs, cf. _suivre_modes
+        self._defilement_au_programme = False
         self._terminal.receivedData.connect(self._sur_donnees)
         self._poser_raccourcis()
         self._poser_fond(fond_du_schema(self._schema))
@@ -638,6 +646,7 @@ class VueKonsole(QFrame):
         Une sequence peut arriver coupee entre deux blocs : la fin non terminee est gardee
         pour le suivant.
         """
+        self._suivre_modes(texte)
         if self._osc_en_cours:
             texte = self._osc_en_cours + texte
             self._osc_en_cours = ""
@@ -657,6 +666,59 @@ class VueKonsole(QFrame):
             elif code == "11" and parametres and parametres != "?":
                 self.sig_fond.emit(parametres)
             debut = texte.find(self.OSC, fin)
+
+    #: Ecran alternatif, suivi de la souris, codage SGR des evenements souris.
+    MODES_ALTERNATIF = {"47", "1047", "1049"}
+    MODES_SOURIS = {"1000", "1002", "1003"}
+    MODE_SGR = "1006"
+    _MODE_PRIVE = re.compile(r"\x1b\[\?([\d;]+)([hl])")
+
+    def _suivre_modes(self, texte):
+        """Suit l'ecran alternatif et le suivi souris SGR (`ESC [ ? n h|l`).
+
+        Un programme plein ecran qui suit la souris (Claude Code en rendu « fullscreen »)
+        defile LUI-MEME : le terminal n'a plus d'historique, sa barre reste pleine et ne
+        fait rien. On la retire alors, et `sig_defilement_au_programme` dit a l'hote qu'il
+        peut en poser une qui parle au programme (molette SGR, cf. envoyer_molette).
+        Une sequence coupee entre deux blocs est manquee : le programme les ecrit d'un trait.
+        """
+        for numeros, etat in self._MODE_PRIVE.findall(texte):
+            for numero in numeros.split(";"):
+                (self._modes.add if etat == "h" else self._modes.discard)(numero)
+        actif = bool(self._modes & self.MODES_ALTERNATIF and self._modes & self.MODES_SOURIS
+                     and self.MODE_SGR in self._modes)
+        if actif != self._defilement_au_programme:
+            self._defilement_au_programme = actif
+            self._terminal.setScrollBarPosition(
+                _qtw.QTermWidgetInterface.NoScrollBar if actif
+                else _qtw.QTermWidgetInterface.ScrollBarRight)
+            self.sig_defilement_au_programme.emit(actif)
+
+    def envoyer_molette(self, crans):
+        """Envoie `crans` crans de molette au programme (> 0 : vers le haut), en SGR."""
+        code = 64 if crans > 0 else 65
+        ligne = self._terminal.screenLinesCount() // 3 + 1
+        colonne = self._terminal.screenColumnsCount() // 2 + 1
+        self._terminal.sendText(f"\x1b[<{code};{colonne};{ligne}M" * abs(crans))
+
+    def lignes_ecran(self):
+        return self._terminal.screenLinesCount()
+
+    def texte_ecran(self):
+        """L'ecran visible, ligne par ligne : QTermWidget ne le lit que par la selection."""
+        lignes = self._terminal.screenLinesCount()
+        self._terminal.setSelectionStart(0, 0)
+        self._terminal.setSelectionEnd(lignes - 1, self._terminal.screenColumnsCount())
+        texte = self._terminal.selectedText(True)
+        self._effacer_selection()
+        return [ligne.rstrip() for ligne in texte.split("\n")]
+
+    def widgets_du_terminal(self):
+        """Le terminal et ses enfants : c'est l'un d'eux qui recoit molette et clavier."""
+        return [self._terminal] + self._terminal.findChildren(QWidget)
+
+    def ajouter_a_droite(self, widget):
+        self.layout().addWidget(widget)
 
     @staticmethod
     def _ecrire_presse_papier(parametres):
