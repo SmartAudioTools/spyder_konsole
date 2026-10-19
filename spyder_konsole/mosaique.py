@@ -28,10 +28,11 @@ Aucun import Spyder : le module se deroule dans un test offscreen ordinaire.
 
 import math
 
-from qtpy.QtCore import QPointF, QRectF, Qt, Signal
-from qtpy.QtGui import QColor, QPainter, QPainterPath, QPen
-from qtpy.QtWidgets import (QFrame, QHBoxLayout, QLabel, QSizePolicy, QSpacerItem,
-                            QSplitter, QStyle, QToolButton, QVBoxLayout, QWidget)
+from qtpy.QtCore import QPoint, QPointF, QRect, QRectF, Qt, Signal
+from qtpy.QtGui import QColor, QPainter, QPainterPath, QPen, QPixmap, QRegion
+from qtpy.QtWidgets import (QApplication, QFrame, QGraphicsOpacityEffect, QHBoxLayout,
+                            QLabel, QSizePolicy, QSpacerItem, QSplitter, QStyle,
+                            QToolButton, QVBoxLayout, QWidget)
 
 from spyder_konsole.konsole_view import eclaircir
 
@@ -70,7 +71,53 @@ def disposition(nombre):
     return tailles
 
 
-class _Onglet(QFrame):
+class OngletTirable(QFrame):
+    """Onglet de titre de cellule qu'on TIRE pour deplacer sa session dans la mosaique.
+
+    Ecrit une fois ici, herite par l'onglet du Terminal et celui de Claude.
+    « reorganiser [...] les fenetre en vu mosaique » (Claude, utilisateur, 19/10/2026),
+    puis « porte le glisser-deposer au Terminal » (meme jour) : au-dela de
+    `startDragDistance`, le relacher emet `sig_lache` avec le point global, et la
+    mosaique cherche la cellule dessous. Ecarte : QDrag et ses mimeData, dont la cible
+    serait le TERMINAL de la cellule visee, qui accepte ou avale les depots ; la saisie
+    implicite de la souris par l'onglet presse suffit, et se deroule offscreen. Pendant
+    le glisser, `sig_glisse` donne chaque position, pour que la mosaique fasse suivre le
+    cadre.
+    """
+
+    #: Emis au relacher d'un glisser, avec le point GLOBAL ou la souris a ete lachee.
+    sig_lache = Signal(QPoint)
+    #: Emis a chaque mouvement d'un glisser en cours, avec les points GLOBAUX de la
+    #: pression et de la souris.
+    sig_glisse = Signal(QPoint, QPoint)
+
+    _depart = None
+    _glisse = False
+
+    def mousePressEvent(self, evenement):  # noqa: N802 - API Qt
+        if evenement.button() == Qt.LeftButton:
+            self._depart = self.mapToGlobal(evenement.pos())
+            self._glisse = False
+        evenement.accept()
+
+    def mouseMoveEvent(self, evenement):  # noqa: N802 - API Qt
+        point = self.mapToGlobal(evenement.pos())
+        if (self._depart is not None and not self._glisse
+                and (point - self._depart).manhattanLength()
+                >= QApplication.startDragDistance()):
+            self._glisse = True
+            self.setCursor(Qt.ClosedHandCursor)
+        if self._glisse:
+            self.sig_glisse.emit(self._depart, point)
+
+    def mouseReleaseEvent(self, evenement):  # noqa: N802 - API Qt
+        if self._glisse and evenement.button() == Qt.LeftButton:
+            self.unsetCursor()
+            self.sig_lache.emit(self.mapToGlobal(evenement.pos()))
+        self._depart, self._glisse = None, False
+
+
+class _Onglet(OngletTirable):
     """L'onglet de titre d'une cellule ; `_liseret` y marque le focus (fond eclairci).
 
     Trait d'1 pixel, focus compris : le second pixel peint au focus est reserve aux
@@ -81,7 +128,7 @@ class _Onglet(QFrame):
     comme l'onglet actif du fork et l'onglet de la mosaique de Claude (« fait la mosaique
     du Terminal », utilisateur, 12/10/2026) ; peint dans la marge droite de la feuille
     (MARGE_CONGE), hors du cadre de l'onglet. Le flanc gauche prolonge le bord gauche du
-    cadre : pas de conge.
+    cadre : pas de conge. On le tire : cf. `OngletTirable`.
     """
 
     _liseret = None
@@ -183,6 +230,11 @@ class Cellule(QFrame):
     #: avec la vue concernee ; c'est le panneau qui sait arreter une session.
     sig_fermeture_demandee = Signal()
 
+    #: Emis quand l'onglet de CETTE cellule a ete tire puis lache, avec le point global.
+    sig_lachee = Signal(QPoint)
+    #: Relaie `_Onglet.sig_glisse` : l'onglet de CETTE cellule est en train d'etre tire.
+    sig_glissee = Signal(QPoint, QPoint)
+
     def __init__(self, vue, titre="", parent=None, compacte=False):
         """`compacte` : bandeau au plus bas, pour les rangees sous la premiere.
 
@@ -247,6 +299,8 @@ class Cellule(QFrame):
         # `_LigneSousOnglet`) ; leve au-dessus d'elle a la fin du constructeur.
         self._onglet = _Onglet(self)
         self._onglet.setObjectName("onglet_cellule_claude")
+        self._onglet.sig_lache.connect(self.sig_lachee)
+        self._onglet.sig_glisse.connect(self.sig_glissee)
         dans_onglet = QHBoxLayout(self._onglet)
         # A droite, la croix ne doit pas toucher le bord de l'onglet.
         dans_onglet.setContentsMargins(0, 0, self.MARGE, self.DEBORD_ONGLET)
@@ -443,7 +497,99 @@ class Cellule(QFrame):
         return vue
 
 
-class Mosaique(QWidget):
+class GlisserDeposer:
+    """Le glisser-deposer des cellules d'une mosaique : methodes seules, melees a `Mosaique`.
+
+    Partage par la mosaique du Terminal et celle de Claude (19/10/2026) ; chacune emet son
+    `sig_ordre_demande` et relie, dans `disposer`, `sig_lachee` a `_deplacer` et
+    `sig_glissee` a `_suivre`. Ecarte : recopier ce code dans le Terminal, deux copies a
+    tenir d'accord a chaque retouche (opacites, rendu du fantome).
+    """
+
+    #: Image de la cellule tiree, qui suit la souris (cf. `_suivre`), l'ecart entre son
+    #: coin et le point saisi, et le voile pose sur la cellule d'origine. None hors glisser.
+    _fantome = _voile = _prise = None
+
+    #: Opacite de l'image qui suit la souris. 0.6 au premier essai : « il faut plus
+    #: d'opacite » (utilisateur, 19/10/2026, apres essai dans Spyder).
+    OPACITE_FANTOME = 0.85
+    #: Opacite du voile couleur de fond pose sur la cellule d'origine (0 a 255).
+    OPACITE_VOILE = 170
+
+    def _suivre(self, cellule, depart, point):
+        """Le cadre de `cellule` suit la souris pendant qu'on tire son onglet.
+
+        Demande de l'utilisateur (19/10/2026) : « en mosaique, il faudrait un deplacement
+        du cadre pendant le glisse depose ». Le cadre deplace est une IMAGE de la cellule
+        (`grab`), posee au-dessus de la mosaique ; la cellule elle-meme reste en place
+        jusqu'au lacher. Ecarte : redisposer la mosaique a chaque mouvement, qui detruit et
+        refait toutes les cellules (`disposer`) et reparente les terminaux — un
+        scintillement et un cout par pixel parcouru, pour un ordre qui n'est pas encore
+        decide.
+
+        Pendant le glisser, la cellule d'origine est couverte d'un voile de la couleur de
+        fond : « mettre de la transparence sur l'onglet d'origine (ou mettre un voile
+        transparent avec la couleur de fond) » (utilisateur, 19/10/2026). Ecarte : un
+        `QGraphicsOpacityEffect` sur la cellule elle-meme, qui ferait peindre le terminal
+        par l'effet tant qu'il dure, et dont il faudrait de plus defaire l'etat si le
+        glisser s'acheve sans deplacement.
+        """
+        if self._fantome is None:
+            # Le voile AVANT le fantome : le dernier enfant cree est peint au-dessus.
+            self._voile = QLabel(self)
+            fond = QColor(cellule._fond_vue)
+            if cellule._fond_vue == "transparent" or not fond.isValid():
+                fond = self.palette().color(self.backgroundRole())
+            self._voile.setStyleSheet("background-color: rgba(%d, %d, %d, %d);"
+                                      % (fond.red(), fond.green(), fond.blue(),
+                                         self.OPACITE_VOILE))
+            self._voile.setGeometry(QRect(cellule.mapTo(self, QPoint(0, 0)), cellule.size()))
+            self._voile.show()
+            self._fantome = QLabel(self)
+            # Pas `grab()` : il peint d'abord le fond de la fenetre, et les coins arrondis
+            # de l'onglet comme la bande a sa droite devenaient un rectangle opaque.
+            # Rendu des seuls enfants sur une image transparente.
+            ratio = cellule.devicePixelRatioF()
+            image = QPixmap(cellule.size() * ratio)
+            image.setDevicePixelRatio(ratio)
+            image.fill(Qt.transparent)
+            cellule.render(image, QPoint(), QRegion(), QWidget.DrawChildren)
+            self._fantome.setPixmap(image)
+            self._fantome.resize(cellule.size())
+            effet = QGraphicsOpacityEffect(self._fantome)
+            effet.setOpacity(self.OPACITE_FANTOME)
+            self._fantome.setGraphicsEffect(effet)
+            # Pris a la PRESSION, pas au premier mouvement : celui-ci arrive deja a
+            # `startDragDistance`, et l'image serait restee d'autant en arriere.
+            self._prise = depart - cellule.mapToGlobal(QPoint(0, 0))
+            self._fantome.show()
+        self._fantome.move(self.mapFromGlobal(point - self._prise))
+
+    def _retirer_fantome(self):
+        if self._fantome is not None:
+            self._fantome.hide()
+            self._fantome.deleteLater()
+            self._fantome = None
+        if self._voile is not None:
+            self._voile.hide()
+            self._voile.deleteLater()
+            self._voile = None
+
+    def _deplacer(self, vue, point):
+        """`vue` lachee au point global `point` : elle prend la place de la cellule
+        dessous, les autres glissent d'un cran, comme un onglet deplace dans sa barre."""
+        self._retirer_fantome()
+        ordre = [cellule.vue for cellule in self._cellules]
+        for index, cellule in enumerate(self._cellules):
+            if cellule.rect().contains(cellule.mapFromGlobal(point)):
+                if cellule.vue is not vue:
+                    ordre.remove(vue)
+                    ordre.insert(index, vue)
+                    self.sig_ordre_demande.emit(ordre)
+                return
+
+
+class Mosaique(QWidget, GlisserDeposer):
     """Le conteneur : des rangees de cellules, toutes redimensionnables.
 
     ELLE PORTE SON PROPRE BOUTON DE SORTIE, et ce n'est pas un luxe : passer en mosaique
@@ -485,6 +631,11 @@ class Mosaique(QWidget):
     #: Emis quand l'utilisateur veut revoir ses instances en onglets SANS reduire le
     #: panneau. Le panneau tient la preference ; ici on ne fait que la demander.
     sig_disposition_demandee = Signal()
+
+    #: Emis avec les vues dans leur NOUVEL ordre, quand l'utilisateur a tire l'onglet
+    #: d'une cellule sur une autre. La mosaique ne redispose pas elle-meme : l'ordre des
+    #: sessions appartient au panneau (ses onglets), qui la redispose.
+    sig_ordre_demande = Signal(list)
 
     #: Taille demandee a chaque cellule par `egaliser`. Volontairement bien plus grande que
     #: tout ecran : ce qui compte est que les parts soient EGALES et que la contrainte de
@@ -607,6 +758,10 @@ class Mosaique(QWidget):
                 # redisposition.
                 cellule.sig_fermeture_demandee.connect(
                     lambda _v=vue: self.sig_fermeture_demandee.emit(_v))
+                cellule.sig_lachee.connect(
+                    lambda point, _v=vue: self._deplacer(_v, point))
+                cellule.sig_glissee.connect(
+                    lambda depart, point, _c=cellule: self._suivre(_c, depart, point))
                 rangee.addWidget(cellule)
                 self._cellules.append(cellule)
             reste = reste[combien:]
@@ -693,6 +848,7 @@ class Mosaique(QWidget):
                 bouton.setParent(self)
                 bouton.hide()
 
+        self._retirer_fantome()
         vues = [cellule.liberer() for cellule in self._cellules]
         for cellule in self._cellules:
             cellule.setParent(None)

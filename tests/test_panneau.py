@@ -212,6 +212,24 @@ class TestBascule(unittest.TestCase):
         self.p.set_maximized_state(False)
         self.assertEqual(self.p._vues, avant)
 
+    def test_un_onglet_deplace_garde_sa_place_en_mosaique(self):
+        un, deux = self.vues
+        self.p._onglets.tabBar().moveTab(0, 1)
+        self.assertEqual(self.p._vues, [deux, un])
+        self.p.set_maximized_state(True)
+        self.assertEqual([c.vue for c in self.p._mosaique.cellules()], [deux, un])
+        self.p.set_maximized_state(False)
+        self.assertEqual([self.p._onglets.widget(i) for i in range(2)], [deux, un])
+
+    def test_un_depot_en_mosaique_reordonne(self):
+        un, deux = self.vues
+        self.p.set_maximized_state(True)
+        self.p._mosaique.sig_ordre_demande.emit([deux, un])
+        self.assertTrue(self.p.en_mosaique())
+        self.assertEqual([c.vue for c in self.p._mosaique.cellules()], [deux, un])
+        self.p.set_maximized_state(False)
+        self.assertEqual([self.p._onglets.widget(i) for i in range(2)], [deux, un])
+
     def test_bouton_de_disposition_visible_seulement_agrandi_en_onglets(self):
         """Il proposerait sinon un etat inatteignable, ou serait cache par la mosaique.
 

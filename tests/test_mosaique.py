@@ -21,7 +21,9 @@ import unittest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from qtpy.QtCore import QEvent  # noqa: E402
+from qtpy.QtCore import QEvent, QPoint, QPointF, Qt  # noqa: E402
+from qtpy.QtGui import QMouseEvent  # noqa: E402
+from qtpy.QtTest import QTest  # noqa: E402
 from qtpy.QtWidgets import (QApplication, QVBoxLayout, QWidget)  # noqa: E402
 
 from spyder_konsole.mosaique import (Cellule, Mosaique, TAILLE_BOUTON,  # noqa: E402
@@ -698,6 +700,124 @@ class TestCongeDeLOnglet(unittest.TestCase):
             self.assertTrue(any(rouge(flanc + d, cadre - 2) for d in range(1, RAYON_CONGE)),
                             "%s : pas d'arc a droite du flanc" % etat)
             cellule.deleteLater()
+
+
+class TestGlisserDeposer(BaseMosaique):
+    """« je souhaite pouvoir reorganiser les onglet par glissé / deposser et les fenetre en
+    vu mosaique également » (Claude, utilisateur, 19/10/2026), puis « porte le
+    glisser-deposer au Terminal » : le code est ici, Claude en herite. On tire l'onglet d'une
+    cellule, on le lache sur une autre : la mosaique DEMANDE le nouvel ordre, c'est le
+    panneau qui redispose."""
+
+    def setUp(self):
+        super().setUp()
+        disposition_hote = QVBoxLayout(self.hote)
+        disposition_hote.addWidget(self.mosaique)
+        self.hote.resize(900, 600)
+        self.elements_ = self.elements(3)
+        self.mosaique.disposer(self.elements_)
+        self.hote.show()
+        APPLICATION.processEvents()
+        self.ordres = []
+        self.mosaique.sig_ordre_demande.connect(self.ordres.append)
+
+    def tirer(self, depart, arrivee, pas=None):
+        """Presse sur l'onglet de `depart` et l'amene au centre de la cellule `arrivee`,
+        SANS le lacher. Rend l'onglet et le point d'arrivee, dans ses coordonnees."""
+        onglet = depart._onglet
+        cible = arrivee.mapToGlobal(arrivee.rect().center())
+        fin = onglet.mapFromGlobal(cible) if pas is None else QPoint(5 + pas, 5)
+        QTest.mousePress(onglet, Qt.LeftButton, Qt.NoModifier, QPoint(5, 5))
+        # Pas `QTest.mouseMove` : sous Qt5 il deplace le curseur sans rien envoyer au widget.
+        APPLICATION.sendEvent(onglet, QMouseEvent(QEvent.MouseMove, QPointF(fin), Qt.NoButton,
+                                                  Qt.LeftButton, Qt.NoModifier))
+        return onglet, fin
+
+    def glisser(self, depart, arrivee, pas=None):
+        """Presse sur l'onglet de `depart`, lache au centre de la cellule `arrivee`."""
+        onglet, fin = self.tirer(depart, arrivee, pas)
+        QTest.mouseRelease(onglet, Qt.LeftButton, Qt.NoModifier, fin)
+
+    def test_lacher_sur_une_autre_cellule_demande_le_nouvel_ordre(self):
+        a, b, c = [vue for vue, _ in self.elements_]
+        self.glisser(self.mosaique.cellule_de(a), self.mosaique.cellule_de(c))
+        self.assertEqual(self.ordres, [[b, c, a]])
+
+    def test_vers_l_avant(self):
+        a, b, c = [vue for vue, _ in self.elements_]
+        self.glisser(self.mosaique.cellule_de(c), self.mosaique.cellule_de(a))
+        self.assertEqual(self.ordres, [[c, a, b]])
+
+    def test_lacher_sur_sa_propre_cellule_ne_demande_rien(self):
+        a = self.elements_[0][0]
+        self.glisser(self.mosaique.cellule_de(a), self.mosaique.cellule_de(a))
+        self.assertEqual(self.ordres, [])
+
+    def test_un_simple_clic_ne_glisse_pas(self):
+        """Sous la distance de glisser, c'est un clic : rien ne bouge."""
+        cellules = self.mosaique.cellules()
+        self.glisser(cellules[0], cellules[2], pas=1)
+        self.assertEqual(self.ordres, [])
+
+    def test_la_croix_ferme_sans_glisser(self):
+        """La croix est un QToolButton a part, pose dans l'onglet : son clic ferme la
+        session et ne compte pas comme le debut d'un glisser."""
+        a = self.elements_[0][0]
+        fermees = []
+        self.mosaique.sig_fermeture_demandee.connect(fermees.append)
+        QTest.mouseClick(self.mosaique.cellule_de(a)._bouton_fermer, Qt.LeftButton)
+        self.assertEqual(fermees, [a])
+        self.assertEqual(self.ordres, [])
+
+    def test_le_cadre_suit_la_souris(self):
+        """« en mosaique, il faudrait un deplacement du cadre pendant le glisse depose »
+        (utilisateur, 19/10/2026) : une image de la cellule tiree, a sa taille, garde
+        sous la souris le point saisi."""
+        cellules = self.mosaique.cellules()
+        onglet, fin = self.tirer(cellules[0], cellules[2])
+        fantome = self.mosaique._fantome
+        self.assertIsNotNone(fantome)
+        self.assertTrue(fantome.isVisible())
+        self.assertEqual(fantome.size(), cellules[0].size())
+        # Saisi a (5, 5) de l'onglet : ce point de l'image est sous la souris.
+        saisi = onglet.mapTo(cellules[0], QPoint(5, 5))
+        self.assertEqual(fantome.mapToGlobal(saisi), onglet.mapToGlobal(fin))
+
+    def test_le_cadre_disparait_au_lacher(self):
+        cellules = self.mosaique.cellules()
+        self.glisser(cellules[0], cellules[2])
+        self.assertIsNone(self.mosaique._fantome)
+        self.assertIsNone(self.mosaique._voile)
+
+    def test_un_simple_clic_ne_fait_pas_de_cadre(self):
+        cellules = self.mosaique.cellules()
+        self.tirer(cellules[0], cellules[2], pas=1)
+        self.assertIsNone(self.mosaique._fantome)
+        self.assertIsNone(self.mosaique._voile)
+
+    def test_un_voile_couvre_la_cellule_d_origine(self):
+        cellules = self.mosaique.cellules()
+        self.tirer(cellules[0], cellules[2])
+        voile = self.mosaique._voile
+        self.assertTrue(voile.isVisible())
+        self.assertEqual(voile.mapToGlobal(QPoint(0, 0)),
+                         cellules[0].mapToGlobal(QPoint(0, 0)))
+        self.assertEqual(voile.size(), cellules[0].size())
+
+    def test_le_fantome_est_transparent_hors_de_l_onglet(self):
+        """A droite de l'onglet, la cellule n'a rien : le fantome non plus (sinon un
+        rectangle opaque cache les arrondis de l'onglet)."""
+        cellules = self.mosaique.cellules()
+        self.tirer(cellules[0], cellules[2])
+        image = self.mosaique._fantome.pixmap().toImage()
+        self.assertEqual(image.pixelColor(image.width() - 5, 2).alpha(), 0)
+
+    def test_le_fantome_passe_au_dessus_du_voile(self):
+        cellules = self.mosaique.cellules()
+        self.tirer(cellules[0], cellules[2])
+        enfants = self.mosaique.children()
+        self.assertLess(enfants.index(self.mosaique._voile),
+                        enfants.index(self.mosaique._fantome))
 
 
 if __name__ == "__main__":

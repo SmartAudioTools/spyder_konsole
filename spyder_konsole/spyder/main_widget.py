@@ -73,6 +73,7 @@ class PanneauTerminal(PluginMainWidget):
         self._onglets = Tabs(self, rename_tabs=True, split_char="/", split_index=0)
         self._onglets.setDocumentMode(True)
         self._onglets.setMovable(True)
+        self._onglets.tabBar().tabMoved.connect(self._suivre_l_ordre_des_onglets)
         # Gardee a part : `_appliquer_cadre` y ajoute la couleur du cadre pour l'onglet actif.
         self._feuille_onglets = self._onglets.styleSheet()
         # set_close_function : l'API de Spyder, celle qu'utilise la console. Elle fait
@@ -136,6 +137,7 @@ class PanneauTerminal(PluginMainWidget):
         # maintenir par geste.
         self._mosaique.sig_nouvelle_demande.connect(self.sig_repertoire_demande)
         self._mosaique.sig_fermeture_demandee.connect(self._fermer_session)
+        self._mosaique.sig_ordre_demande.connect(self._reordonner)
 
     def _appliquer_cadre(self, focus):
         """Le cadre du panneau : gris au repos, BLEU VIF quand il a le clavier.
@@ -733,6 +735,19 @@ class PanneauTerminal(PluginMainWidget):
             return
         bouton = croix[0]
         self._mosaique.poser_geometrie_croix(bouton.width(), bouton.height())
+
+    def _suivre_l_ordre_des_onglets(self, *_ignore):
+        """Un onglet tire a la souris (`setMovable`) : `_vues` prend l'ordre de la barre.
+        Sans cela, l'ordre se perdait au passage en mosaique, que `_vues` dispose, comme
+        dans Claude (« porte le glisser-deposer au Terminal », utilisateur, 19/10/2026)."""
+        barre = [self._onglets.widget(i) for i in range(self._onglets.count())]
+        self._vues = [vue for vue in barre if vue in self._vues]
+
+    def _reordonner(self, vues):
+        """`Mosaique.sig_ordre_demande` : une cellule tiree sur une autre."""
+        self._vues = [vue for vue in vues if vue in self._vues]
+        self._mosaique.disposer(self._elements())
+        self._rafraichir_letat_affiche()
 
     def _passer_en_mosaique(self):
         self._relever_les_espacements_du_coin()
