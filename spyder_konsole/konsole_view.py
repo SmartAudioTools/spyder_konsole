@@ -99,16 +99,38 @@ def eclaircir(couleur):
     return QColor(couleur).lighter(ECLAIRCISSEMENT).name()
 
 
+#: chemin -> ((mtime_ns, taille), contenu) : cf. _lire_ini.
+_cache_ini = {}
+
+
 def _lire_ini(chemin):
-    """Lit un fichier .profile/.colorscheme (format INI de KDE). {} si absent/illisible."""
-    lecteur = configparser.ConfigParser(strict=False, interpolation=None)
-    # KDE distingue la casse des cles ; configparser les abaisse par defaut.
-    lecteur.optionxform = str
+    """Lit un fichier .profile/.colorscheme (format INI de KDE). {} si absent/illisible.
+
+    Memorise par (chemin, date de modification, taille) : configparser coutait 6 a 12 ms
+    par lecture, et la bascule mosaique <-> onglets relisait le meme jeu de couleurs une
+    vingtaine de fois (80 ms sur 0,5 s, profil du 12/11/2026). Un fichier reecrit change de
+    date : il est relu. Rend une COPIE : `schema_aux_couleurs_de_spyder` modifie ce qu'il
+    recoit."""
     try:
-        lecteur.read(chemin, encoding="utf-8")
-    except (OSError, configparser.Error):
-        return {}
-    return {section: dict(lecteur[section]) for section in lecteur.sections()}
+        etat = os.stat(chemin)
+        signature = (etat.st_mtime_ns, etat.st_size)
+    except (OSError, TypeError, ValueError):
+        signature = None
+    memoire = _cache_ini.get(chemin) if signature is not None else None
+    if memoire is not None and memoire[0] == signature:
+        contenu = memoire[1]
+    else:
+        lecteur = configparser.ConfigParser(strict=False, interpolation=None)
+        # KDE distingue la casse des cles ; configparser les abaisse par defaut.
+        lecteur.optionxform = str
+        try:
+            lecteur.read(chemin, encoding="utf-8")
+        except (OSError, configparser.Error):
+            return {}
+        contenu = {section: dict(lecteur[section]) for section in lecteur.sections()}
+        if signature is not None:
+            _cache_ini[chemin] = (signature, contenu)
+    return {section: dict(valeurs) for section, valeurs in contenu.items()}
 
 
 def profil_konsole():
@@ -338,6 +360,9 @@ class VueKonsole(QFrame):
         self._liseret = None                     # second trait du focus, cf. poser_liseret
         self._double = True                      # le liseret est-il peint ? cf. poser_liseret
         self._schema_base = None                 # jeu demande, hors focus, cf. appliquer_schema
+        self._schema_pose = None                 # jeu reellement pose, cf. appliquer_schema
+        self._fonds_connus = []                  # couleurs de la feuille du terminal, cf. _poser_fond
+        self._caches_a_repolir = set()           # enfants caches restes a l'ancien fond, idem
         self.setFrameShape(QFrame.NoFrame)       # le cadre vient de la feuille, pas de Qt
         if not DISPONIBLE:
             raise RuntimeError(
@@ -437,10 +462,15 @@ class VueKonsole(QFrame):
         # Au focus, le jumeau eclairci, s'il existe (un jeu de base non derive n'en a pas).
         if self._liseret is not None and _fichier_schema(nom + SUFFIXE_FOCUS):
             nom += SUFFIXE_FOCUS
+        # Deja pose : rien a refaire. Reposer relisait le fichier du jeu et la feuille du
+        # terminal (10 ms) ; la bascule mosaique -> onglets le faisait 300 fois (12/11/2026).
+        if nom == self._schema_pose:
+            return True
         try:
             self._terminal.setColorScheme(nom)
         except Exception:      # jeu inconnu : on garde celui en place, sans casser
             return False
+        self._schema_pose = nom
         self._poser_fond(fond_du_schema(nom))
         return True
 
@@ -455,17 +485,53 @@ class VueKonsole(QFrame):
         focus), qui la remplacent sans prevenir.
         """
         self._fond = couleur
-        # Sans selecteur : vaut pour le terminal ET ses enfants, donc aussi les marges
-        # de la barre, ou transparaissait le fond de QWidget de la feuille de Spyder.
-        self._terminal.setStyleSheet(
-            f"background-color: {couleur.name()};" if couleur is not None else "")
+        terminal = self._terminal
+        nom = couleur.name() if couleur is not None else ""
+        if terminal.property("smartos_fond") == nom:
+            self.update()
+            return
+        terminal.setProperty("smartos_fond", nom)
+        if nom and nom not in self._fonds_connus:
+            # Couleur jamais vue : la feuille les enumere toutes, une regle par couleur ;
+            # la reposer repolit tout le terminal, enfants caches compris.
+            # Pour le terminal ET tous ses enfants (`*`), donc aussi les marges de la
+            # barre, ou transparaissait le fond de QWidget de la feuille de Spyder.
+            self._fonds_connus.append(nom)
+            terminal.setStyleSheet(self._feuille_des_fonds())
+            self._caches_a_repolir.clear()
+        else:
+            # Couleur deja dans la feuille : seule la propriete change, et seuls le
+            # terminal et ses enfants AFFICHES sont repolis (0,6 ms au lieu de 2,4 hors
+            # ecran, rendu identique au pixel pres, banc du 12/11/2026). Les caches (barre
+            # de recherche et son menu, l'essentiel du cout) le seront a leur apparition.
+            for widget in [terminal] + terminal.findChildren(QWidget):
+                if widget is terminal or widget.isVisibleTo(terminal):
+                    widget.style().unpolish(widget)
+                    widget.style().polish(widget)
+                    widget.update()
+                elif widget not in self._caches_a_repolir:
+                    self._caches_a_repolir.add(widget)
+                    widget.installEventFilter(self)
         self.update()
 
+    def _feuille_des_fonds(self):
+        return " ".join('QWidget[smartos_fond="%s"], QWidget[smartos_fond="%s"] *'
+                        " { background-color: %s; }" % (n, n, n) for n in self._fonds_connus)
+
     def eventFilter(self, objet, evenement):  # noqa: N802 - on suit l'API Qt
+        # Un enfant du terminal reste cache pendant un changement de fond : repoli a son
+        # apparition, cf. _poser_fond.
         if objet is self._ecran_terminal:       # garde d'opacite, cf. __init__
             if (evenement.type() in (QEvent.Paint, QEvent.StyleChange, QEvent.Show)
                     and not objet.testAttribute(Qt.WA_OpaquePaintEvent)):
                 objet.setAttribute(Qt.WA_OpaquePaintEvent, True)
+        if evenement.type() == QEvent.Show and objet in self._caches_a_repolir:
+            self._caches_a_repolir.discard(objet)
+            if objet is not self._ecran_terminal:    # la garde d'opacite reste
+                objet.removeEventFilter(self)
+            objet.style().unpolish(objet)
+            objet.style().polish(objet)
+            objet.update()
         return super().eventFilter(objet, evenement)
 
     def poser_liseret(self, couleur, double=True):
