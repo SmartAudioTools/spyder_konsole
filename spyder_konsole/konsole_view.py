@@ -57,7 +57,7 @@ import configparser
 import os
 import re
 
-from qtpy.QtCore import QPointF, QRectF, Qt, Signal
+from qtpy.QtCore import QEvent, QPointF, QRectF, Qt, Signal
 from qtpy.QtGui import QColor, QKeySequence, QPainter, QPainterPath, QPen, QShortcut
 from qtpy.QtWidgets import QFrame, QHBoxLayout, QWidget
 
@@ -354,6 +354,18 @@ class VueKonsole(QFrame):
         # le processus ne demarre. Avec startnow=1 le shell part dans le mauvais dossier,
         # et le corriger apres coup laisse une premiere invite fausse a l'ecran.
         self._terminal = _qtw.QTermWidget(0, self)
+        # L'ecran du terminal peint tout son rectangle, mais Qt l'oublie : sous la feuille de
+        # style de l'application (qdarkstyle), chaque polissage lui retire WA_OpaquePaintEvent
+        # (reproduit hors ecran le 12/11/2026). Chacune de ses repeintes refaisait alors les
+        # parents dessous, jusqu'a la fenetre entiere : 8 Mpx/s dans le dock en mosaique, le
+        # clavier qui rame. Le polissage direct (style().polish) n'envoie aucun evenement : la
+        # garde agit donc aussi a la repeinte, pour les suivantes. Rendu identique au pixel.
+        self._ecran_terminal = next(
+            (w for w in self._terminal.findChildren(QWidget)
+             if w.metaObject().className() == "Konsole::TerminalDisplay"), None)
+        if self._ecran_terminal is not None:
+            self._ecran_terminal.setAttribute(Qt.WA_OpaquePaintEvent, True)
+            self._ecran_terminal.installEventFilter(self)
 
         self._appliquer_apparence(police, taille_police)
 
@@ -448,6 +460,13 @@ class VueKonsole(QFrame):
         self._terminal.setStyleSheet(
             f"background-color: {couleur.name()};" if couleur is not None else "")
         self.update()
+
+    def eventFilter(self, objet, evenement):  # noqa: N802 - on suit l'API Qt
+        if objet is self._ecran_terminal:       # garde d'opacite, cf. __init__
+            if (evenement.type() in (QEvent.Paint, QEvent.StyleChange, QEvent.Show)
+                    and not objet.testAttribute(Qt.WA_OpaquePaintEvent)):
+                objet.setAttribute(Qt.WA_OpaquePaintEvent, True)
+        return super().eventFilter(objet, evenement)
 
     def poser_liseret(self, couleur, double=True):
         """Double le trait du cadre a l'interieur (couleur), ou le retire (None).
