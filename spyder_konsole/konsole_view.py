@@ -363,6 +363,7 @@ class VueKonsole(QFrame):
         self._schema_pose = None                 # jeu reellement pose, cf. appliquer_schema
         self._fonds_connus = []                  # couleurs de la feuille du terminal, cf. _poser_fond
         self._caches_a_repolir = set()           # enfants caches restes a l'ancien fond, idem
+        self._a_droite = []                      # widgets superposes au bord droit, cf. ajouter_a_droite
         self.setFrameShape(QFrame.NoFrame)       # le cadre vient de la feuille, pas de Qt
         if not DISPONIBLE:
             raise RuntimeError(
@@ -519,6 +520,8 @@ class VueKonsole(QFrame):
                         " { background-color: %s; }" % (n, n, n) for n in self._fonds_connus)
 
     def eventFilter(self, objet, evenement):  # noqa: N802 - on suit l'API Qt
+        if objet is self._terminal and evenement.type() == QEvent.Resize:
+            self._placer_a_droite()             # barre superposee, cf. ajouter_a_droite
         # Un enfant du terminal reste cache pendant un changement de fond : repoli a son
         # apparition, cf. _poser_fond.
         if objet is self._ecran_terminal:       # garde d'opacite, cf. __init__
@@ -803,7 +806,42 @@ class VueKonsole(QFrame):
         return [self._terminal] + self._terminal.findChildren(QWidget)
 
     def ajouter_a_droite(self, widget):
-        self.layout().addWidget(widget)
+        """Pose `widget` PAR-DESSUS le bord droit du terminal, pas a cote.
+
+        Demande de l'utilisateur, 13/11/2026 (mosaique serree) : une bande vide separait le
+        texte de la barre. Mesure sur capture : Claude Code laisse vide sa derniere colonne,
+        et le residu de largeur (moins d'une colonne) s'y ajoutait ; la barre, rangee a cote
+        dans le layout, prenait 12 px de plus. Enfant du TERMINAL (la feuille de fond
+        `QWidget[smartos_fond] *` le couvre donc, cf. _poser_fond), replace a chaque
+        redimensionnement. Bonus : montrer/cacher la barre ne change plus la largeur du
+        terminal, donc ne fait plus refaire sa mise en page a Claude.
+        """
+        widget.setParent(self._terminal)
+        self._a_droite.append(widget)
+        if not self._a_droite[1:]:
+            self._terminal.installEventFilter(self)
+        self._placer_a_droite()
+
+    def _placer_a_droite(self):
+        # La barre ne peut recouvrir que la derniere colonne, celle que Claude Code laisse
+        # vide : le reste de sa largeur est RESERVE par une marge droite dans le layout
+        # interne de QTermWidget (l'affichage y retrecit, la barre reste enfant du
+        # terminal et garde son fond). Sans cette reserve (13/11/2026), quand le residu de
+        # largeur etait petit, la barre de 12 px mangeait la fin des lignes (signale par
+        # l'utilisateur le 18/11/2026, « il me manque parfois la fin d'une ligne »).
+        from qtpy.QtGui import QFontMetrics
+
+        colonne = QFontMetrics(self._terminal.getTerminalFont()).horizontalAdvance("M")
+        reserve = max(0, sum(w.width() for w in self._a_droite) - colonne)
+        interne = self._terminal.layout()
+        if interne is not None and interne.contentsMargins().right() != reserve:
+            interne.setContentsMargins(0, 0, reserve, 0)
+        droite = self._terminal.width()
+        for widget in self._a_droite:
+            largeur = widget.width()
+            widget.setGeometry(droite - largeur, 0, largeur, self._terminal.height())
+            widget.raise_()
+            droite -= largeur
 
     @staticmethod
     def _ecrire_presse_papier(parametres):

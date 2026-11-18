@@ -100,6 +100,30 @@ class TestVueKonsole(BaseTerminal):
         # Le pid doit exister VRAIMENT : un entier non nul ne prouve rien.
         os.kill(pid, 0)
 
+    def test_ajouter_a_droite_superpose_sans_retrecir_le_terminal(self):
+        """La barre de l'hote couvre le bord droit du terminal (demande du 13/11/2026)."""
+        from qtpy.QtWidgets import QWidget
+        terminal = self.vue._terminal
+        APPLICATION.processEvents()
+        largeur_avant = terminal.width()
+        barre = QWidget()
+        barre.setFixedWidth(12)
+        self.vue.ajouter_a_droite(barre)
+        barre.show()
+        APPLICATION.processEvents()
+        self.assertEqual(terminal.width(), largeur_avant)       # pas de colonne perdue
+        self.assertIs(barre.parent(), terminal)
+        self.assertEqual(barre.geometry().right(), terminal.width() - 1)
+        self.assertEqual(barre.height(), terminal.height())
+        # La barre ne recouvre que la derniere colonne : le reste est reserve (18/11/2026).
+        from qtpy.QtGui import QFontMetrics
+        colonne = QFontMetrics(terminal.getTerminalFont()).horizontalAdvance("M")
+        self.assertEqual(terminal.layout().contentsMargins().right(), max(0, 12 - colonne))
+        self.vue.resize(400, 200)                             # suit le redimensionnement
+        APPLICATION.processEvents()
+        self.assertEqual(barre.geometry().right(), terminal.width() - 1)
+        self.assertEqual(barre.height(), terminal.height())
+
     def test_la_sortie_du_shell_arrive_a_l_ecran(self):
         """Le test qui compte : ce que la commande ecrit doit etre LU dans le terminal."""
         self.vue.demarrer(commande=["/bin/sh", "-c", "echo MARQUEUR_SMARTOS; sleep 5"])
